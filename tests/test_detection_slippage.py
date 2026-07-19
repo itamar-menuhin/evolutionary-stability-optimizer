@@ -39,26 +39,41 @@ def test_no_repeats_returns_empty():
 
 def test_short_homopolymer_runs_below_filter_threshold_are_empty():
     # A run of 4 or 5 identical nucleotides always fails the -9 log10-prob
-    # filter (n=4 -> -9.984, n=5 -> -9.255), so these should never appear in
-    # the output - and, since the detection seed was raised from 4 to 6 to
-    # avoid wasted work on repeats that can never survive the filter, they
-    # should never even be generated as candidates in the first place.
+    # filter outright (n=4 -> -9.984, n=5 -> -9.255) - no length-2 fallback
+    # rescues these (a length-2 "XX" site needs 6nt minimum), so they
+    # correctly produce no detection at all, at any length_base_unit.
     seq_4 = "ATGCTAGCCATTAGGC" + "AAAA" + "TTGCCTAGCATGC"
     seq_5 = "ATGCTAGCCATTAGGC" + "AAAAA" + "TTGCCTAGCATGC"
     assert find_slippage_sites(seq_4).empty
     assert find_slippage_sites(seq_5).empty
 
 
-def test_six_nucleotide_homopolymer_run_is_still_detected():
-    # n=6 is the exact minimum that survives the filter (-8.526 > -9);
-    # confirms the raised detection seed didn't accidentally exclude it.
-    # ("AAAAAA" is also a valid length-2 "AA"x3 site, which outscores the
-    # length-1 reading and is what actually survives collapse - see
-    # test_finds_single_nucleotide_run for the same effect with T's.)
-    seq = "ATGCTAGCCATTAGGC" + "AAAAAA" + "ATGCCTAGCATGC"
+def test_homopolymer_runs_6_to_11_are_found_via_length_2_not_length_1():
+    # n=6..11 all pass the -9 filter at length_base_unit=1, but an
+    # independently-run length-2 detection of the same region always scores
+    # higher (e.g. n=8: length-1 -7.068 vs length-2 -4.497) and wins the
+    # overlap collapse - so the region is still found, just reported as a
+    # length-2 site, never as length-1. This is why the length-1 detection
+    # seed is 12, not 6: below 12 the length-1 reading never survives anyway.
+    for n in (6, 8, 11):
+        seq = "ATGCTAGCCATTAGGC" + "A" * n + "TTGCCTAGCATGC"
+        df = find_slippage_sites(seq)
+        hit = df[(df.start <= 16 + n) & (df.end >= 16)]
+        assert not hit.empty, f"n={n} should still be detected (via length-2)"
+        assert hit.iloc[0].length_base_unit == 2, f"n={n} should be reported as length-2, not length-1"
+
+
+def test_homopolymer_run_of_12_is_the_first_to_win_as_length_1():
+    # n=12 is the exact crossover: length-1 score -4.152 first exceeds
+    # length-2's -4.371, so from here the length-1 reading survives collapse
+    # instead - confirming the detection seed (12) doesn't cut off the first
+    # case where length-1 actually matters.
+    seq = "ATGCTAGCCATTAGGC" + "A" * 12 + "TTGCCTAGCATGC"
     df = find_slippage_sites(seq)
-    matches = df[df.sequence.str.contains("AAAAAA")]
-    assert not matches.empty
+    hit = df[(df.start <= 28) & (df.end >= 16)]
+    assert not hit.empty
+    assert hit.iloc[0].length_base_unit == 1
+    assert hit.iloc[0].num_base_units == 12
 
 
 def test_modify_df_slippage_splits_into_alternating_units():

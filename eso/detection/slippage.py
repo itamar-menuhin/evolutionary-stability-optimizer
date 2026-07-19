@@ -1,17 +1,33 @@
 """Replication-slippage (SSR - simple sequence repeat) hotspot detection.
 
 Finds short tandem repeats (base units of length 1-15 repeated 3+ times, or a
-single nucleotide repeated 6+ times) and scores them with the empirical
+single nucleotide repeated 12+ times) and scores them with the empirical
 mutation-rate formula from the EFM Calculator paper (Jack et al. 2015, ACS
 Synthetic Biology, DOI: 10.1021/acssynbio.5b00068).
 
-The length-1 (homopolymer) minimum is 6, not 3, because the same -9 log10-prob
-cutoff applied below always fails for shorter runs and always passes for
-longer ones: log10_prob = -12.9 + 0.729*n crosses -9 at n=6 exactly. Detecting
-from n=6 instead of scanning down to n=4 and discarding the result avoids
-wasted work on repeats that can never survive the filter. This doesn't apply
-to length>1 units: log10_prob = -4.749 + 0.063*n is already > -9 at the
-smallest detectable n=3, so every length>1 candidate always passes.
+The length-1 (homopolymer) minimum is 12, not 3, for two stacked reasons:
+
+1. log10_prob = -12.9 + 0.729*n crosses the -9 filter cutoff (applied below)
+   at n=6 - runs of n=4/5 always fail it and are never worth detecting.
+2. Every homopolymer run of n>=6 is *also* always detected as a length-2 site
+   (any 6+ identical characters trivially contain "XX" repeated 3+ times),
+   scored as -4.749 + 0.063*floor(n/2) - and collapse_overlapping_intervals
+   below only keeps the single highest-scoring representation per physical
+   site. Comparing the two formulas: the length-1 score grows ~0.729/nt while
+   the length-2 score grows only ~0.0315/nt, so length-2 always wins for
+   n=6..11 (e.g. n=8: length-1 -7.068 vs length-2 -4.497) - the length-1
+   detection is real but its result is always discarded. The crossover is
+   n=12 exactly (length-1 -4.152 vs length-2 -4.371) - only from there does
+   the length-1 reading start being the one that survives, correctly
+   reflecting a homopolymer run's much higher risk than a linear-in-repeats
+   length-2 score would suggest.
+
+So detecting length-1 sites below n=12 is provably pure waste - the result
+never changes the final output regardless, since length-2 detection (run
+independently, over the same sequence) always produces a same-or-better-scoring
+overlapping candidate for that region. This doesn't apply to length>1 units:
+log10_prob = -4.749 + 0.063*n is already > -9 at the smallest detectable n=3,
+so every length>1 candidate always passes the -9 filter on its own.
 """
 
 import numpy as np
@@ -47,9 +63,9 @@ def _find_longest_match(seq, subunit, start_index):
 
 def _generate_slippage_sites_current_subunit(seq, subunit):
     curr_slippage_sites = []
-    # 6 for length-1 units (the true minimum that survives the -9 filter
-    # below), 3 for longer units (see module docstring).
-    subseq = subunit * (6 if len(subunit) == 1 else 3)
+    # 12 for length-1 units (below that, length-2 detection of the same
+    # region always outscores it - see module docstring), 3 for longer units.
+    subseq = subunit * (12 if len(subunit) == 1 else 3)
 
     indexes_curr = list(_find_all(seq, subseq))
     if not indexes_curr:

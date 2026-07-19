@@ -47,13 +47,24 @@ def test_no_indexerror_when_repeat_sits_at_a_length_boundary():
     assert not df.empty
 
 
-def test_six_nucleotide_homopolymer_run_is_still_detected():
-    # n=6 is the exact minimum that survives the -9 filter; confirms the
-    # detection seed raised from 4 to 6 (see eso.detection.slippage's module
-    # docstring) didn't accidentally exclude the boundary case here too.
-    seq = "ATGCTAGCCATTAGGC" + "AAAAAA" + "ATGCCTAGCATGC"
-    df = find_slippage_sites(seq)
-    assert (df.sequence.str.contains("AAAAAA")).any()
+def test_homopolymer_run_of_11_found_via_length_2_run_of_12_via_length_1():
+    # Same crossover as eso.detection.slippage (see its module docstring):
+    # n=11 is still detected, but only via an independently-run length-2
+    # reading (which outscores length-1's); n=12 is the first case where the
+    # length-1 reading itself wins - confirms the detection seed here (12)
+    # matches the primary implementation's boundary exactly.
+    seq_11 = "ATGCTAGCCATTAGGC" + "A" * 11 + "TTGCCTAGCATGC"
+    df_11 = find_slippage_sites(seq_11)
+    hit_11 = df_11[(df_11.start <= 27) & (df_11.end >= 16)]
+    assert not hit_11.empty
+    assert hit_11.iloc[0].length_base_unit == 2
+
+    seq_12 = "ATGCTAGCCATTAGGC" + "A" * 12 + "TTGCCTAGCATGC"
+    df_12 = find_slippage_sites(seq_12)
+    hit_12 = df_12[(df_12.start <= 28) & (df_12.end >= 16)]
+    assert not hit_12.empty
+    assert hit_12.iloc[0].length_base_unit == 1
+    assert hit_12.iloc[0].num_base_units == 12
 
 
 def test_no_redundant_rows_for_same_start_competing_lengths():

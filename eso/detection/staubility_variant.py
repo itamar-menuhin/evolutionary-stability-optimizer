@@ -91,50 +91,42 @@ def find_recombination_sites(seq, num_sites=np.inf):
 
 def find_slippage_sites_length_l(seq, length):
     """Per-frameshift scan for a repeated base unit of size `length`
-    (repeated 3+ times, or 6+ times for length=1 - see
-    eso.detection.slippage's module docstring for why 6 and not 3/4: it's the
-    exact minimum that survives the -9 log10-prob filter applied downstream).
+    (repeated 3+ times, or 12+ times for length=1 - see
+    eso.detection.slippage's module docstring for why 12: below that, an
+    independently-run length-2 detection of the same physical region always
+    outscores it, so its result is always discarded downstream).
     """
     from textwrap import wrap
 
     slippage_sites = []
+    homopolymer_window = 12
 
     for frameshift in range(length):
         curr_seq = seq[frameshift:]
         curr_seq_split = wrap(curr_seq, length)
 
         end_of_range = len(curr_seq_split) - 2
-        if length == 1:
-            # reserve room for the ii+5 access below (6-in-a-row minimum,
-            # vs. the ii+2 access length>1 needs)
-            end_of_range -= 3
 
         for ii in range(end_of_range):
             # `length == 1` must be checked FIRST so Python's `and`
-            # short-circuits before touching curr_seq_split[ii + 2..5] when
-            # length > 1: end_of_range only reserves room up to ii+2 for that
-            # case, so evaluating the ii+3+ access unconditionally (as in the
-            # original STABLES source) crashes with IndexError whenever a
-            # length>1 repeat sits at the boundary of its range - a real,
-            # previously-undiscovered bug found via fuzz testing.
+            # short-circuits before touching curr_seq_split[ii + 1/2] when
+            # length > 1 (needed for is_followed2 below); is_followed1 itself
+            # uses slicing, which never raises IndexError even past the list
+            # end, so it needs no equivalent bounds bug to worry about - a
+            # slice shorter than `homopolymer_window` just fails the length
+            # check instead of crashing.
             is_followed2 = (
                 length > 1
                 and curr_seq_split[ii] == curr_seq_split[ii + 1]
                 and curr_seq_split[ii] == curr_seq_split[ii + 2]
             )
-            is_followed1 = (
-                length == 1
-                and curr_seq_split[ii] == curr_seq_split[ii + 1]
-                and curr_seq_split[ii] == curr_seq_split[ii + 2]
-                and curr_seq_split[ii] == curr_seq_split[ii + 3]
-                and curr_seq_split[ii] == curr_seq_split[ii + 4]
-                and curr_seq_split[ii] == curr_seq_split[ii + 5]
-            )
+            window = curr_seq_split[ii:ii + homopolymer_window]
+            is_followed1 = length == 1 and len(window) == homopolymer_window and len(set(window)) == 1
 
             if is_followed2:
                 slippage_sites.append((frameshift + ii * length, frameshift + length * (ii + 3)))
             if is_followed1:
-                slippage_sites.append((ii, ii + 6))
+                slippage_sites.append((ii, ii + homopolymer_window))
 
     if not slippage_sites:
         return pd.DataFrame(columns=['start', 'end', 'sequence', 'length_base_unit'])
