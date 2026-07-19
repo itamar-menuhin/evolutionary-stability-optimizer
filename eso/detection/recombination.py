@@ -138,6 +138,34 @@ def calc_recombination_score(location_delta, site_length):
     return np.log10(recombination_probability)
 
 
+def _ranges_overlap(a, b):
+    return a[0] <= b[1] and b[0] <= a[1]
+
+
+def _collapse_overlapping_pairs(df_pairs):
+    """Different seed 16-mers for the same real hotspot converge, via
+    elongation, to slightly different (start, end) extents rather than one
+    canonical pair - so even exact-coordinate dedup leaves several
+    near-identical rows per real site. Collapse them via non-max suppression:
+    walk pairs in descending score order, keeping a pair only if BOTH its
+    site_1 and site_2 ranges are still free of an already-kept pair's
+    corresponding range. Requiring overlap on both sides (not just one) avoids
+    merging two genuinely distinct hotspots that happen to share one site.
+    """
+    kept_rows = []
+    kept_ranges = []  # list of ((start_1,end_1), (start_2,end_2))
+
+    for _, row in df_pairs.sort_values('log10_prob_recombination_ecoli', ascending=False).iterrows():
+        range_1 = (row.start_1, row.end_1)
+        range_2 = (row.start_2, row.end_2)
+        if any(_ranges_overlap(range_1, r1) and _ranges_overlap(range_2, r2) for r1, r2 in kept_ranges):
+            continue
+        kept_rows.append(row)
+        kept_ranges.append((range_1, range_2))
+
+    return pd.DataFrame(kept_rows, columns=df_pairs.columns) if kept_rows else df_pairs.iloc[0:0]
+
+
 def find_recombination_sites(seq, num_sites=np.inf):
     """Find candidate recombination (RMD) hotspots in `seq`.
 
@@ -164,11 +192,14 @@ def find_recombination_sites(seq, num_sites=np.inf):
         lambda x: calc_recombination_score(x.location_delta, x.site_length), axis=1)
 
     df_pairs = df_pairs[df_pairs.log10_prob_recombination_ecoli > -9]
+
+    # collapse the many candidate-seed rows that converge (via elongation) on
+    # the same or overlapping real hotspot down to one representative row each
+    df_pairs = _collapse_overlapping_pairs(df_pairs)
     df_pairs = df_pairs.sort_values('log10_prob_recombination_ecoli', ascending=False)
 
     if num_sites < np.inf:
-        df_num_sites = df_pairs[['start_1', 'end_1', 'start_2', 'end_2']].drop_duplicates().head(num_sites)
-        df_pairs = df_pairs.merge(df_num_sites, on=['start_1', 'end_1', 'start_2', 'end_2'])
+        df_pairs = df_pairs.head(num_sites)
 
     for col in ['start_1', 'end_1', 'start_2', 'end_2', 'location_delta', 'site_length']:
         df_pairs.loc[:, col] = df_pairs[col].astype(int)

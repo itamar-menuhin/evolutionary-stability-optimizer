@@ -26,7 +26,11 @@ Synthetic Biology).
 Two independently-developed implementations of the slippage/recombination detectors are
 included (`eso.detection.recombination`/`eso.detection.slippage`, and
 `eso.detection.staubility_variant`) - they haven't yet been reconciled into a single
-canonical algorithm; see the module docstrings for how they differ.
+canonical algorithm. Recombination detection is routed through
+`eso.detection.dispatch.find_recombination_sites(seq, num_sites, mode="thorough" | "fast")`
+(also `eso.pipeline.main(..., recombination_mode=...)` / `eso-optimize --recombination-mode`);
+see [`docs/detector-comparisons.md`](docs/detector-comparisons.md) for the tradeoffs,
+benchmarks, and bugs found while comparing them.
 
 There's also `eso.detection.junction_linker`, which applies the same hotspot-detection
 idea to a different problem: checking whether joining a target gene to a host sequence

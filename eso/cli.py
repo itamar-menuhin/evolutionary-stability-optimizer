@@ -24,6 +24,10 @@ def build_parser():
     parser.add_argument('--organism-name', default='not_specified',
                         help="Host organism for codon optimization (species name, TaxID, or a custom table name "
                              "e.g. kompas/human_antibody_heavy_chain/human_antibody_light_chain).")
+    parser.add_argument('--recombination-mode', default='thorough', choices=['thorough', 'fast'],
+                        help="'thorough' (default): Levenshtein-tolerant, catches near-duplicate hotspots, "
+                             "best for gene-length sequences. 'fast': exact-match only, ~100x faster, "
+                             "for much longer sequences (see eso.detection.dispatch).")
     return parser
 
 
@@ -40,6 +44,7 @@ def main(argv=None):
         maxi_gc=args.maxi_gc,
         method=args.method,
         organism_name=args.organism_name,
+        recombination_mode=args.recombination_mode,
     )
     print(message)
     return 0 if message == 'Success!' else 1

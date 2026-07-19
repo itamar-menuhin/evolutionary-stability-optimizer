@@ -53,7 +53,10 @@ def find_recombination_sites(seq, num_sites=np.inf):
     df_recombination = df_recombination[(df_recombination.start_delta != 1.0) | (df_recombination.end_delta != 1.0)]
 
     df_recombination.loc[(df_recombination.end_delta == 1.0), 'end'] = None
-    df_recombination.loc[:, 'end'] = df_recombination.loc[:, 'end'].bfill().astype(int) - 1
+    # `df.loc[:, 'end'] = ...` would silently keep the column's existing float64
+    # dtype (from the None assignment above) even after .astype(int) below;
+    # only whole-column reassignment (df['end'] = ...) actually changes dtype.
+    df_recombination['end'] = df_recombination.loc[:, 'end'].bfill().astype(int) - 1
     df_recombination = df_recombination[df_recombination.start_delta != 1.0][['start', 'end']]
 
     df_recombination.loc[:, 'sequence'] = df_recombination.apply(
