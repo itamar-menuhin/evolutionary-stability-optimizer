@@ -76,9 +76,10 @@ constraints) - but both made the raw `recombination_sites.csv` a human would
 open unreadable, and the `staubility_variant` crash blocked using it at all
 for realistic repeat sizes.
 
-### Benchmark
+### Benchmark (superseded - see "Implementation-level optimizations" below)
 
-One embedded repeat per sequence length, wall-clock time to detect it:
+One embedded repeat per sequence length, wall-clock time to detect it, **as
+originally ported, before the pandas-overhead fix documented below**:
 
 | Length (nt) | `thorough` | `fast` | Speedup |
 |---|---|---|---|
@@ -89,23 +90,78 @@ One embedded repeat per sequence length, wall-clock time to detect it:
 | 3,300 | 19.134s | 0.024s | 791x |
 | 6,500 | 76.354s | 0.040s | 1,902x |
 
-`thorough` grows roughly quadratically with sequence length (consistent with
-its per-site candidate-generation-and-matching approach scanning the whole
-sequence); `fast` stays flat regardless of length in this range (consistent
-with a single vectorized counting pass).
+`thorough` grew roughly quadratically with sequence length; `fast` stayed
+flat. **These numbers are now stale** - `thorough` is 5-78x faster than this
+table shows, and the crossover point for reaching for `fast` moved from
+~1-2kb out to the tens of kb. See below for current numbers and updated
+recommendation.
 
-### Recommendation
+### Recommendation (updated after the optimization below)
 
-- **`thorough` (default)** for gene-length sequences (hundreds to low-thousands
-  of nt - ESO's typical case), where a near-duplicate hotspot matters
-  biologically and the ~1-20s cost is a non-issue.
-- **`fast`** for much longer sequences (multi-kb constructs, whole plasmids),
-  where `thorough`'s quadratic-ish cost becomes minutes-to-hours - accepting
-  that it can miss a centrally-mutated near-duplicate.
+- **`thorough` (default)** for anything from gene-length up through tens of kb
+  (see updated benchmark below) - `fast`'s sensitivity gap (missing a
+  centrally-mutated near-duplicate) is a real cost, so there's no reason to
+  pay it until `thorough`'s runtime actually becomes inconvenient.
+- **`fast`** once sequences get long enough that even the optimized
+  `thorough` cost matters (very large multi-kb+ constructs, whole plasmids,
+  or workloads processing many sequences where every second compounds).
 - Kept as two explicit modes rather than merged into one canonical
   implementation, per project decision (2026-07) - revisit if/when the
   slippage and methylation detector pairs are worked through and a pattern for
   unification (or not) emerges.
+
+### Implementation-level optimization: stop using pandas inside the hot loop
+
+Prompted by a direct question - *this code was hand-written; are there easy
+wins, standard libraries doing the same work?* - profiled `thorough` with
+`cProfile` on an ~830nt sequence instead of guessing. Result: `_generate_relevant_pairs`
+was 5.1s of 7.0s total, almost entirely pandas call overhead (`.isin()`,
+`_ixs`, `_get_value`, `__getattr__`) from filtering `df_substitutions` /
+`df_deletions` / `df_insertions` with a fresh `df.sequence.isin(neighbor_set)`
+call **once per candidate site** (up to O(n) sites) - the classic
+"pandas-in-a-Python-loop" anti-pattern, not an algorithmic problem.
+
+Fixed by building a plain `dict` mapping `sequence -> [(start, end), ...]` for
+each of the three candidate frames *once*, and iterating the input frame via
+`zip()` instead of `.iloc[ii, col]` - same algorithm, same pairs produced,
+just without pandas overhead reintroduced on every iteration. Verified
+equivalent to the original (kept temporarily, not committed) implementation
+via a 100-trial fuzz sweep comparing exact `(start_1,end_1,start_2,end_2)`
+sets - 0/100 mismatches - since dict iteration order differs from the
+original DataFrame row order, but every downstream step (collapse, sort) is
+independent of input order.
+
+No standard library swap was actually needed here - the fix is entirely
+"stop paying pandas' per-call overhead in a loop," not a smarter algorithm.
+(`rapidfuzz`, already an indirect dependency via `python-Levenshtein`, was
+considered for the underlying edit-distance work, but the profiling showed
+the cost was in the *pandas plumbing*, not the Levenshtein distance
+computation itself, so replacing that wouldn't have addressed the actual
+bottleneck.)
+
+**Updated benchmark**, same methodology as the stale table above:
+
+| Length (nt) | old | new | speedup |
+|---|---|---|---|
+| 300 | 1.481s | 0.291s | 5.1x |
+| 500 | 2.383s | 0.409s | 5.8x |
+| 900 | 3.844s | 0.422s | 9.1x |
+| 1,700 | 16.277s | 0.480s | 33.9x |
+| 3,300 | 19.134s | 0.645s | 29.7x |
+| 6,500 | 76.354s | 0.973s | 78.5x |
+
+And pushed further, since it's now fast enough to test at scale:
+
+| Length (nt) | `thorough` | `fast` |
+|---|---|---|
+| 12,900 | 2.191s | 0.066s |
+| 25,700 | 3.433s | 0.161s |
+| 51,300 | 6.527s | 0.229s |
+
+Growth is now roughly linear-to-mildly-superlinear rather than quadratic -
+51,300nt in 6.5s, where the old implementation's quadratic trend would have
+put it at tens of minutes. This is why the recommendation above changed: the
+practical crossover to `fast` moved from ~1-2kb out to the tens of kb.
 
 ## Slippage detection
 
@@ -184,9 +240,10 @@ helper (non-max suppression by score, generalizing the pair-based collapse
 already built for recombination): sort by score descending, keep a candidate
 only if its range doesn't overlap an already-kept one's.
 
-### Benchmark
+### Benchmark (superseded - see "Implementation-level optimization" below)
 
-One embedded repeat per sequence length, wall-clock time to detect it (row
+One embedded repeat per sequence length, wall-clock time to detect it, **as
+originally ported**, before the O(n^2)->O(n) fix documented below (row
 counts matched exactly at every length: 3/3, 3/3, 5/5, 8/8, 18/18, 36/36):
 
 | Length (nt) | `default` | `fast` | Faster mode |
@@ -198,21 +255,19 @@ counts matched exactly at every length: 3/3, 3/3, 5/5, 8/8, 18/18, 36/36):
 | 4,815 | 0.916s | 0.438s | fast (2.1x) |
 | 9,615 | 3.495s | 0.663s | fast (5.3x) |
 
-`default` is actually *faster* below ~1-2kb, then crosses over: its cost grows
-faster than `fast`'s as length increases (consistent with `default`'s
-per-candidate substring search vs. `fast`'s fixed-chunk frameshift scan). The
-gap is far smaller than recombination's (max ~5x here vs. ~1,900x there) at
-comparable lengths.
+**This crossover no longer exists** - `default`'s per-candidate substring
+search had an O(n^2) algorithmic problem, not just a slower constant factor;
+fixing it (below) makes `default` faster than `fast` at every length tested,
+including well past where this table shows `fast` "winning".
 
-### Recommendation
+### Recommendation (updated after the optimization below)
 
-- **`default`** for anything up to roughly 1-2kb (where it's comparable to or
-  faster than `fast`) - which covers ESO's typical gene-length use case.
-- **`fast`** past that, where its gentler scaling starts to win, and more so
-  as length keeps growing.
-- Unlike recombination, this is a **pure speed choice with no sensitivity
-  tradeoff** (verified via the 300-trial fuzz sweep) - so switching modes
-  never changes which hotspots get reported, only how long it takes.
+- **`default`** essentially always, per the updated benchmark below - there
+  is no longer a length range where `fast` is actually faster.
+- Unlike recombination, this remains a **pure speed choice with no
+  sensitivity tradeoff** (verified via the 300-trial fuzz sweep) - so
+  switching modes never changes which hotspots get reported, only how long
+  it takes (and now, `default` is simply the better choice on both counts).
 
 ### Skipping candidates that can never survive the risk filter or the collapse
 
@@ -276,16 +331,53 @@ nucleotides by pure chance is astronomically rare - real engineered
 sequences with e.g. poly-A tails are a different story) while still catching
 the one that's actually there.
 
-**Honest caveat on overall impact, still true after both rounds**: length-1
-detection remains a tiny fraction of total `find_slippage_sites` runtime -
-the dominant cost is candidate generation for length_base_unit 2-15
-(`_find_relevant_subunits_len_l`'s substring generation + `.find()` calls per
-candidate), which has no equivalent shortcut: every length>1 candidate always
-survives the `-9` filter on its own merits, so there's no analytical way to
-skip generating some of them ahead of time. Both rounds measurably speed up
-the length-1 sub-step specifically (dramatically, at scale); neither
-addresses the actual bottleneck for long sequences - that's what
-`mode="fast"` is for.
+**Caveat as of the two rounds above (superseded immediately below)**:
+length-1 detection was a tiny fraction of total `find_slippage_sites`
+runtime - the dominant cost was candidate generation for length_base_unit
+2-15 (`_find_relevant_subunits_len_l`'s substring generation + `.find()`
+call per candidate), which had no equivalent filter-based shortcut, since
+every length>1 candidate always survives the `-9` filter on its own merits.
+
+### Implementation-level optimization: the real bottleneck was an O(n^2) algorithm
+
+Profiling `default` with `cProfile` on a 9.6kb random sequence (prompted by
+the same *"are there easy wins?"* question that led to the recombination fix
+above) found `_find_relevant_subunits_len_l` responsible for 93% of total
+runtime (2.591s of 2.798s), essentially all of it in 88,151 calls to
+`str.find()`. The function builds every unique length-`L` substring, then
+calls `seq.find(subunit*3)` once per unique candidate to check whether it
+repeats 3+ times back-to-back - each call rescans the whole sequence, so with
+O(n) unique candidates (typical for non-repetitive DNA) this is O(n^2)
+overall, not the O(n) the surrounding code's structure suggests.
+
+Fixed by building a single position dict (`{substring: [positions]}`) in one
+O(n) pass, then checking for 3 consecutive occurrences via O(1) set
+membership (`p`, `p+L`, `p+2L` all present means `subunit*3` occurs at `p`,
+exactly what the old `.find()` call was testing indirectly). Verified
+output-neutral via the same 300-trial fuzz sweep (0/300 mismatches).
+
+**This changed the mode comparison completely.** Re-running the `default` vs.
+`fast` benchmark from earlier:
+
+| Length (nt) | `default` | `fast` | Faster mode |
+|---|---|---|---|
+| 330 | 0.025s | 0.042s | default (1.7x) |
+| 1,230 | 0.039s | 0.086s | default (2.2x) |
+| 9,630 | 0.155s | 0.572s | default (3.7x) |
+| 20,015 | 0.358s | 1.192s | default (3.3x) |
+| 100,015 | 2.120s | 9.764s | default (4.6x) |
+| 300,015 | 5.721s | 58.262s | default (10.2x) |
+
+`default` is now faster than `fast` at **every** tested length, with the gap
+*widening* rather than crossing over - the opposite of the original
+benchmark's shape. `fast`'s name no longer describes its speed relative to
+`default`; it remains a distinct, independently-implemented algorithm (still
+useful as a cross-check / second opinion, and identical in what it detects -
+row counts matched exactly at every length above), but there is no longer a
+performance reason to reach for it. Left the mode API and default
+(`mode="default"`) as-is rather than renaming or deprecating `"fast"` -
+worth revisiting if `staubility_variant`'s own `.find()`-per-candidate
+pattern (used for its recombination detector too) gets the same fix.
 
 ---
 

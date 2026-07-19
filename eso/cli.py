@@ -26,11 +26,12 @@ def build_parser():
                              "e.g. kompas/human_antibody_heavy_chain/human_antibody_light_chain).")
     parser.add_argument('--recombination-mode', default='thorough', choices=['thorough', 'fast'],
                         help="'thorough' (default): Levenshtein-tolerant, catches near-duplicate hotspots, "
-                             "best for gene-length sequences. 'fast': exact-match only, ~100x faster, "
-                             "for much longer sequences (see eso.detection.dispatch).")
+                             "good up through tens of kb. 'fast': exact-match only, for very large sequences "
+                             "where even 'thorough' becomes inconvenient (see eso.detection.dispatch).")
     parser.add_argument('--slippage-mode', default='default', choices=['default', 'fast'],
-                        help="Both detect identical hotspots (unlike --recombination-mode); "
-                             "'fast' just scales better for longer (multi-kb+) sequences.")
+                        help="Both detect identical hotspots; 'default' is also faster at every length "
+                             "tested (see eso.detection.dispatch) - 'fast' is kept as an independent "
+                             "cross-check implementation, not for its speed.")
     return parser
 
 

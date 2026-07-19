@@ -26,7 +26,7 @@ def suspect_site_extractor(target_seq, compute_motifs, num_sites, motifs_path=No
     recombination_mode: see eso.detection.dispatch.find_recombination_sites -
         "thorough" (default, Levenshtein-tolerant) or "fast" (exact-match only).
     slippage_mode: see eso.detection.dispatch.find_slippage_sites -
-        "default" or "fast" (equivalent sensitivity, "fast" scales better).
+        "default" or "fast" (equivalent sensitivity; "default" is also faster).
     """
     sites_collector = {
         'df_recombination': find_recombination_sites(target_seq, num_sites, mode=recombination_mode),
@@ -179,11 +179,12 @@ def main(input_folder=None, output_path=None, compute_motifs=False, num_sites=np
         Omit or pass {} to treat entire sequences as the ORF with no exclusions.
     recombination_mode: {"thorough", "fast"}
         See eso.detection.dispatch.find_recombination_sites. "thorough" (default)
-        catches near-duplicate hotspots and suits gene-length sequences; "fast"
-        is exact-match only but ~100x faster, for much longer sequences.
+        catches near-duplicate hotspots and is good through tens of kb; "fast"
+        is exact-match only, for sequences large enough that even "thorough"
+        becomes inconvenient.
     slippage_mode: {"default", "fast"}
         See eso.detection.dispatch.find_slippage_sites. Both detect identical
-        hotspots; "fast" scales better for longer (multi-kb+) sequences.
+        hotspots; "default" is also faster at every length tested.
 
     Returns
     -------

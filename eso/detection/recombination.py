@@ -70,28 +70,44 @@ def _order_site12(df):
     return df_output
 
 
+def _build_sequence_index(df):
+    """Map sequence -> list of (start, end) tuples, for O(1) dict lookup instead
+    of a `df.sequence.isin(...)` filter (which rescans/reindexes the whole
+    frame) called once per candidate site.
+    """
+    index = {}
+    for sequence, start, end in zip(df.sequence, df.start, df.end):
+        index.setdefault(sequence, []).append((start, end))
+    return index
+
+
 def _generate_relevant_pairs(df_first_sites, df_insertions, df_substitutions, df_deletions):
+    """Profiling showed this function dominates find_recombination_sites'
+    runtime (5.1s of 7.0s on an ~830nt sequence), almost entirely in pandas
+    overhead: `.isin()` plus the surrounding boolean-mask filtering and
+    `.iloc`/`.loc` indexing, called once per candidate site (potentially
+    O(n) sites). Building a plain-dict index once up front, and iterating
+    the input frames as plain Python tuples via zip() rather than
+    `.iloc[ii, col]`, avoids nearly all of that per-call pandas overhead
+    while producing identical pairs.
+    """
     pairs = []
 
-    for ii in range(df_first_sites.shape[0]):
-        sequence_1 = df_first_sites.iloc[ii, 0]
+    substitutions_index = _build_sequence_index(df_substitutions)
+    deletions_index = _build_sequence_index(df_deletions)
+    insertions_index = _build_sequence_index(df_insertions)
 
+    for sequence_1, start_1, end_1 in zip(df_first_sites.sequence, df_first_sites.start, df_first_sites.end):
         neighbors_substitutions, neighbors_deletions, neighbors_insertions = _generate_neighbors(sequence_1)
 
-        df_curr_substitutions = df_substitutions[df_substitutions.sequence.isin(neighbors_substitutions)]
-        df_curr_deletions = df_deletions[df_deletions.sequence.isin(neighbors_deletions)]
-        df_curr_insertions = df_insertions[df_insertions.sequence.isin(neighbors_insertions)]
-
-        for df_curr in [df_curr_substitutions, df_curr_deletions, df_curr_insertions]:
-            if df_curr.shape[0] > 0:
-                start_1 = df_first_sites.iloc[ii, 1]
-                end_1 = df_first_sites.iloc[ii, 2]
-
-                for jj in range(df_curr.shape[0]):
-                    sequence_2 = df_curr.iloc[jj, 0]
-                    start_2 = df_curr.iloc[jj, 1]
-                    end_2 = df_curr.iloc[jj, 2]
-                    pairs.append((sequence_1, start_1, end_1, sequence_2, start_2, end_2))
+        for neighbors, index in (
+            (neighbors_substitutions, substitutions_index),
+            (neighbors_deletions, deletions_index),
+            (neighbors_insertions, insertions_index),
+        ):
+            for neighbor_seq in neighbors:
+                for start_2, end_2 in index.get(neighbor_seq, ()):
+                    pairs.append((sequence_1, start_1, end_1, neighbor_seq, start_2, end_2))
 
     df_pairs = pd.DataFrame.from_records(
         pairs, columns=['sequence_1', 'start_1', 'end_1', 'sequence_2', 'start_2', 'end_2'])

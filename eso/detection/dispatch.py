@@ -28,21 +28,20 @@ def find_recombination_sites(seq, num_sites=np.inf, mode="thorough"):
 
     mode="thorough" (default) - eso.detection.recombination: Levenshtein-tolerant,
         catches pairs of sites within edit distance 1 of each other, not just
-        exact duplicates. Recommended for gene-length sequences (hundreds to
-        low-thousands of nt - ESO's typical case) where near-duplicate hotspots
-        matter biologically. Cost scales with sequence length in a way that
-        gets expensive for multi-kb sequences (~3.5s for an ~830nt sequence
-        with one real repeat, in local benchmarks).
+        exact duplicates. Recommended for essentially all sequence lengths up
+        through tens of kb (~6.5s at 51,300nt in local benchmarks, after
+        fixing a pandas-overhead bottleneck - see docs/detector-comparisons.md)
+        - there's no reason to pay "fast"'s sensitivity gap until this
+        actually becomes inconvenient.
 
     mode="fast" - eso.detection.staubility_variant: exact 16-mer match only,
-        via vectorized n-gram counting. ~100x faster at gene scale. Will miss
-        a near-duplicate whenever its point of divergence sits centrally
-        enough that no 16-consecutive-nt exact window survives on either side
-        (verified: catches a duplicate with a 1nt substitution near either
-        edge, since 16+nt of exact match remains; misses the same case when
-        the substitution is centered). Recommended for much longer sequences
-        (multi-kb constructs, whole plasmids) where the thorough mode's
-        per-site cost becomes impractical.
+        via vectorized n-gram counting. Will miss a near-duplicate whenever
+        its point of divergence sits centrally enough that no 16-consecutive-nt
+        exact window survives on either side (verified: catches a duplicate
+        with a 1nt substitution near either edge, since 16+nt of exact match
+        remains; misses the same case when the substitution is centered).
+        Reach for this only once "thorough"'s runtime actually matters (very
+        large multi-kb+ constructs, or many-sequence batch workloads).
     """
     try:
         detector = RECOMBINATION_MODES[mode]
@@ -58,15 +57,18 @@ def find_slippage_sites(seq, num_sites=np.inf, mode="default"):
     Unlike recombination, both modes detect exactly the same hotspots -
     verified via 300 randomized trials with zero sensitivity or row-count
     mismatches after fixing bugs in both implementations (see
-    docs/detector-comparisons.md). This is purely a speed choice:
+    docs/detector-comparisons.md). This is purely a speed choice, and
+    "default" wins it outright:
 
-    mode="default" - eso.detection.slippage: comparable or slightly faster
-        than "fast" for gene-length sequences (a few hundred to ~1-2kb), but
-        its cost grows faster than "fast"'s with sequence length.
+    mode="default" - eso.detection.slippage: after fixing an O(n^2) candidate-
+        scan (see docs/detector-comparisons.md), this is faster than "fast"
+        at every length tested, from a few hundred nt through 300,000nt,
+        with the gap widening as length grows (10x faster at 300kb).
 
-    mode="fast" - eso.detection.staubility_variant: scales better for longer
-        sequences - roughly 5x faster than "default" at ~9.6kb in local
-        benchmarks, with the gap widening as length increases further.
+    mode="fast" - eso.detection.staubility_variant: kept as an independent
+        second implementation (useful as a cross-check, and it's a distinct
+        algorithm, not just a slower copy) - but there is no longer a length
+        range where it's actually faster than "default".
     """
     try:
         detector = SLIPPAGE_MODES[mode]
