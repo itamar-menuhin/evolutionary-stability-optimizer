@@ -1,0 +1,34 @@
+[tool.poetry]
+name = "eso"
+version = "0.1.0"
+description = "Evolutionary Stability Optimizer (ESO) - detects and removes hypermutable sites (recombination, slippage, methylation hotspots) from engineered DNA sequences while preserving translation and codon usage."
+authors = ["Itamar Menuhin"]
+readme = "README.md"
+packages = [{ include = "eso" }]
+include = ["eso/data/*.csv"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+biopython = "^1.83"
+numpy = ">=1.26,<3.0"
+pandas = "^2.2.1"
+scikit-learn = "^1.4.1.post1"
+dnachisel = "^3.2.11"
+python-Levenshtein = "^0.25.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0"
+
+[tool.poetry.extras]
+docx-report = ["python-docx"]
+
+[tool.poetry.dependencies.python-docx]
+version = "^1.1.0"
+optional = true
+
+[tool.poetry.scripts]
+eso-optimize = "eso.cli:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
