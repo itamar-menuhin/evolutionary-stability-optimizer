@@ -47,6 +47,15 @@ def test_no_indexerror_when_repeat_sits_at_a_length_boundary():
     assert not df.empty
 
 
+def test_six_nucleotide_homopolymer_run_is_still_detected():
+    # n=6 is the exact minimum that survives the -9 filter; confirms the
+    # detection seed raised from 4 to 6 (see eso.detection.slippage's module
+    # docstring) didn't accidentally exclude the boundary case here too.
+    seq = "ATGCTAGCCATTAGGC" + "AAAAAA" + "ATGCCTAGCATGC"
+    df = find_slippage_sites(seq)
+    assert (df.sequence.str.contains("AAAAAA")).any()
+
+
 def test_no_redundant_rows_for_same_start_competing_lengths():
     # A run of 6 T's is valid as both a length-1 and length-2 site at the same
     # start; only the highest-scoring representation should survive.

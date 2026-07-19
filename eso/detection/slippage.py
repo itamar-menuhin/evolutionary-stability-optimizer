@@ -1,9 +1,17 @@
 """Replication-slippage (SSR - simple sequence repeat) hotspot detection.
 
 Finds short tandem repeats (base units of length 1-15 repeated 3+ times, or a
-single nucleotide repeated 4+ times) and scores them with the empirical
+single nucleotide repeated 6+ times) and scores them with the empirical
 mutation-rate formula from the EFM Calculator paper (Jack et al. 2015, ACS
 Synthetic Biology, DOI: 10.1021/acssynbio.5b00068).
+
+The length-1 (homopolymer) minimum is 6, not 3, because the same -9 log10-prob
+cutoff applied below always fails for shorter runs and always passes for
+longer ones: log10_prob = -12.9 + 0.729*n crosses -9 at n=6 exactly. Detecting
+from n=6 instead of scanning down to n=4 and discarding the result avoids
+wasted work on repeats that can never survive the filter. This doesn't apply
+to length>1 units: log10_prob = -4.749 + 0.063*n is already > -9 at the
+smallest detectable n=3, so every length>1 candidate always passes.
 """
 
 import numpy as np
@@ -39,7 +47,9 @@ def _find_longest_match(seq, subunit, start_index):
 
 def _generate_slippage_sites_current_subunit(seq, subunit):
     curr_slippage_sites = []
-    subseq = subunit * (4 if len(subunit) == 1 else 3)
+    # 6 for length-1 units (the true minimum that survives the -9 filter
+    # below), 3 for longer units (see module docstring).
+    subseq = subunit * (6 if len(subunit) == 1 else 3)
 
     indexes_curr = list(_find_all(seq, subseq))
     if not indexes_curr:

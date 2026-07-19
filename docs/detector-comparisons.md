@@ -117,7 +117,7 @@ Two implementations of the same SSR (short tandem repeat) concept:
   non-overlapping occurrence of each candidate.
 - **`eso.detection.staubility_variant`** (STABLES) - for each length and every
   frameshift offset within that length, splits the sequence into fixed-size
-  chunks and scans for 3 (or 4, for length 1) identical chunks in a row.
+  chunks and scans for 3 (or 6, for length 1) identical chunks in a row.
 
 Both exposed through `eso.detection.dispatch.find_slippage_sites(seq,
 num_sites, mode="default" | "fast")`, and threaded through
@@ -213,6 +213,56 @@ comparable lengths.
 - Unlike recombination, this is a **pure speed choice with no sensitivity
   tradeoff** (verified via the 300-trial fuzz sweep) - so switching modes
   never changes which hotspots get reported, only how long it takes.
+
+### Skipping candidates that can never pass the risk filter
+
+The `-9` log10-prob cutoff is a function of `num_base_units` alone, so it's
+possible to work out ahead of time exactly which candidates it will always
+reject - and skip detecting them at all, rather than finding, scoring, and
+then discarding them:
+
+- **length_base_unit == 1**: `log10_prob = -12.9 + 0.729n`. Solving `> -9`
+  gives `n > 5.35`, i.e. **n >= 6**. The detection seed for homopolymer runs
+  was `subunit*4` in both implementations - so runs of exactly 4 or 5 (which
+  always fail the filter) were being fully detected, extended, and scored
+  before being thrown away.
+- **length_base_unit > 1**: `log10_prob = -4.749 + 0.063n`. Even at the
+  smallest detectable `n=3`, this is already `-4.56 > -9` - every length>1
+  candidate always survives. There's nothing to skip here; the cutoff is only
+  ever binding for homopolymer runs.
+
+Raised the seed from 4-in-a-row to 6-in-a-row for length-1 detection in both
+`eso.detection.slippage` and `eso.detection.staubility_variant` (with the
+corresponding bounds-safe indexing adjustment in the latter - see
+`test_no_indexerror_when_repeat_sits_at_a_length_boundary`'s neighborhood in
+the code). Output is provably unchanged (re-ran the 300-trial fuzz sweep:
+0/300 mismatches), since exactly the rows that would have been filtered out
+downstream are no longer generated upstream.
+
+**Isolated benchmark** (length-1 detection only, old seed=4 vs new seed=6, on
+random sequences with no injected repeats - i.e. only the naturally-occurring
+homopolymer runs random sequence content produces):
+
+| Length (nt) | old (seed=4) | new (seed=6) | candidates (old \| new) | speedup |
+|---|---|---|---|---|
+| 20,000 | 0.0054s | 0.0052s | 243 \| 14 | ~1x |
+| 100,000 | 0.0425s | 0.0112s | 1,134 \| 75 | 3.8x |
+| 500,000 | 1.168s | 0.277s | 5,842 \| 334 | 4.2x |
+
+At 500,000nt, **94% of the old candidates** (5,508 of 5,842) were length-4-5
+runs that would always be discarded - confirming the wasted work was real and
+substantial for this specific sub-step, growing with sequence length.
+
+**Honest caveat on overall impact**: length-1 detection is a tiny fraction of
+total `find_slippage_sites` runtime - at 50,000nt, the isolated length-1 step
+takes ~0.008s while the full length 1-15 pipeline takes ~82s. The dominant
+cost by far is candidate generation for length_base_unit 2-15
+(`_find_relevant_subunits_len_l`'s substring generation + `.find()` calls per
+candidate), which has no equivalent shortcut: since every length>1 candidate
+always survives the `-9` filter, there's no analytical way to skip generating
+some of them ahead of time the way there is for length-1. This fix measurably
+speeds up the length-1 sub-step specifically; it does not address the actual
+bottleneck for long sequences (that's what `mode="fast"` is for).
 
 ---
 
