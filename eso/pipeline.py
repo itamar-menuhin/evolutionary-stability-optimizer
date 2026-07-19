@@ -9,8 +9,7 @@ from os import path
 import numpy as np
 import pandas as pd
 
-from eso.detection.dispatch import find_recombination_sites
-from eso.detection.slippage import find_slippage_sites
+from eso.detection.dispatch import find_recombination_sites, find_slippage_sites
 from eso.detection.methylation import load_motifs, find_motif_sites
 from eso.io_utils import file_opener, relevant_file_paths, test_input
 from eso.optimize import optimization_engine
@@ -19,17 +18,19 @@ from eso.sequence_utils import parse_region
 
 
 def suspect_site_extractor(target_seq, compute_motifs, num_sites, motifs_path=None,
-                            recombination_mode='thorough'):
+                            recombination_mode='thorough', slippage_mode='default'):
     """Detect recombination and slippage sites (and, if `compute_motifs`, methylation
     motif sites) in `target_seq`. Returns a dict of dataframes keyed by
     'df_recombination', 'df_slippage', and optionally 'df_motifs'.
 
     recombination_mode: see eso.detection.dispatch.find_recombination_sites -
         "thorough" (default, Levenshtein-tolerant) or "fast" (exact-match only).
+    slippage_mode: see eso.detection.dispatch.find_slippage_sites -
+        "default" or "fast" (equivalent sensitivity, "fast" scales better).
     """
     sites_collector = {
         'df_recombination': find_recombination_sites(target_seq, num_sites, mode=recombination_mode),
-        'df_slippage': find_slippage_sites(target_seq, num_sites),
+        'df_slippage': find_slippage_sites(target_seq, num_sites, mode=slippage_mode),
     }
 
     if compute_motifs:
@@ -46,7 +47,7 @@ def _extract_cai(objectives_text_summary, num_codons):
 
 def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
             optimize, mini_gc, maxi_gc, method, organism_name, indexes,
-            recombination_mode='thorough'):
+            recombination_mode='thorough', slippage_mode='default'):
     """Run the two-pass optimization (CAI/GC only, then + hotspot avoidance) over
     every sequence record in `data`, and write out CSVs + a Word report to
     `output_path/<file_stem>/`.
@@ -85,7 +86,8 @@ def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
             maximal_cai = _extract_cai(obj_description, num_codons)
 
         curr_sites_collector = suspect_site_extractor(
-            curr_seq, compute_motifs, num_sites, motifs_path, recombination_mode=recombination_mode)
+            curr_seq, compute_motifs, num_sites, motifs_path,
+            recombination_mode=recombination_mode, slippage_mode=slippage_mode)
 
         df_recombination = curr_sites_collector['df_recombination']
         if len(df_recombination) > 0:
@@ -145,7 +147,8 @@ def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
 
 def main(input_folder=None, output_path=None, compute_motifs=False, num_sites=np.inf,
          motifs_path=None, optimize=True, mini_gc=0.3, maxi_gc=0.7, method='use_best_codon',
-         organism_name='not_specified', indexes=None, recombination_mode='thorough'):
+         organism_name='not_specified', indexes=None, recombination_mode='thorough',
+         slippage_mode='default'):
     """Optimize every FASTA/GenBank file in `input_folder`, writing per-file CSVs
     of detected hotspots and the optimized sequence into `output_path`.
 
@@ -178,6 +181,9 @@ def main(input_folder=None, output_path=None, compute_motifs=False, num_sites=np
         See eso.detection.dispatch.find_recombination_sites. "thorough" (default)
         catches near-duplicate hotspots and suits gene-length sequences; "fast"
         is exact-match only but ~100x faster, for much longer sequences.
+    slippage_mode: {"default", "fast"}
+        See eso.detection.dispatch.find_slippage_sites. Both detect identical
+        hotspots; "fast" scales better for longer (multi-kb+) sequences.
 
     Returns
     -------
@@ -200,7 +206,8 @@ def main(input_folder=None, output_path=None, compute_motifs=False, num_sites=np
         curr_results = backend(
             data, file, output_path, compute_motifs, num_sites, motifs_path,
             optimize=optimize, mini_gc=mini_gc, maxi_gc=maxi_gc, method=method,
-            organism_name=organism_name, indexes=indexes, recombination_mode=recombination_mode)
+            organism_name=organism_name, indexes=indexes, recombination_mode=recombination_mode,
+            slippage_mode=slippage_mode)
         final_results.extend((file, seq_index, seq) for seq_index, seq in curr_results)
 
     return message, final_results

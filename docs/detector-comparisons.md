@@ -107,7 +107,114 @@ with a single vectorized counting pass).
   slippage and methylation detector pairs are worked through and a pattern for
   unification (or not) emerges.
 
+## Slippage detection
+
+Two implementations of the same SSR (short tandem repeat) concept:
+
+- **`eso.detection.slippage`** (`ESO_curr`) - for each base-unit length 1-15,
+  pre-filters to candidate repeat units that already occur 3+ times back-to-back
+  somewhere in the sequence (`seq.find(subunit*3) > -1`), then finds every
+  non-overlapping occurrence of each candidate.
+- **`eso.detection.staubility_variant`** (STABLES) - for each length and every
+  frameshift offset within that length, splits the sequence into fixed-size
+  chunks and scans for 3 (or 4, for length 1) identical chunks in a row.
+
+Both exposed through `eso.detection.dispatch.find_slippage_sites(seq,
+num_sites, mode="default" | "fast")`, and threaded through
+`eso.pipeline.main(..., slippage_mode=...)` / `eso-optimize --slippage-mode
+{default,fast}`.
+
+### What was actually tested
+
+1. The three cases already covered by `tests/test_detection_slippage.py`
+   (dinucleotide repeat, single-nucleotide run, no repeats), run through both
+   implementations side by side.
+2. A 300-trial randomized fuzz sweep: random prefix + a repeated unit (length
+   1-8, count 3-7) + random suffix, checking whether both implementations
+   agree on (a) whether the true repeat region is detected at all, and (b) the
+   resulting row count. **0/300 mismatches** on both counts after the fixes
+   below - unlike recombination, these two implementations are fully
+   equivalent in what they detect.
+3. Runtime vs. sequence length, 315nt-9,615nt (see benchmark below).
+
+### Bugs found and fixed during testing
+
+Four, all in `eso.detection.staubility_variant` (its `eso.detection.slippage`
+sibling only needed the redundancy fix):
+
+- **Crashed on any repeat long enough to trigger the back-to-back merge
+  logic** - the identical `df.loc[:, 'end'] = ...` dtype bug found in the
+  recombination variant (see above), present in the same shape here.
+- **Crashed with `IndexError` whenever a length>1 repeat sat at the boundary
+  of its scan range** - `is_followed1`'s `curr_seq_split[ii + 3]` access ran
+  unconditionally whenever the first two equality checks passed, *regardless
+  of `length`*, because the `and length == 1` guard sat last in the boolean
+  chain rather than first - so it didn't short-circuit before the
+  out-of-bounds access for `length > 1`. Confirmed present in the original
+  STABLES source (`Staubility_Code_shimshi.py` lines 1081-1084) via a
+  side-by-side read, so this predates the port; found only by randomized fuzz
+  testing (`CACGCATTTCCCCCCTACATCACCAGAGAG`), since it requires a genuine
+  repeat to sit exactly at a length/frameshift boundary. Fixed by reordering
+  the boolean chain so `length == 1` / `length > 1` is checked *first*.
+- **Missing the `-9` risk-score cutoff entirely** - a 4-5nt homopolymer run
+  (log10 prob ~-9.3 to -9.98, below the cutoff both `eso.detection.slippage`
+  and this module's own `find_recombination_sites` apply) was reported
+  unfiltered. Traced to the original STABLES codebase: the filter genuinely
+  isn't inside `find_slippage_sites` there either - it's applied by the
+  *caller*, elsewhere in `Staubility_Code_shimshi.py`
+  (`df_slip.loc[df_slip.log10_prob_slippage_ecoli > -9]  # only 'severe'
+  constraints`). Extracting `find_slippage_sites` in isolation lost that
+  downstream step. Restored inside the function so it's self-contained and
+  consistent with its sibling.
+- **No deduplication at all** - unlike `eso.detection.slippage`'s
+  `drop_duplicates(subset="start")`, this had no collapsing step, so
+  same-start competing base-unit-length representations were both reported
+  (see next bug for why "same start" dedup isn't sufficient either).
+
+And one in `eso.detection.slippage` itself:
+
+- **`drop_duplicates(subset="start")` missed phase-shifted overlapping
+  detections.** A run like `"GCGCGCGC"` is a valid length-2 site starting at
+  position N (`"GC"` x4), *and* its 1-shifted reading `"CGCGCG"` is a separate
+  valid length-2 site starting at N+1 (`"CG"` x3) - different `start`, same
+  physical repeat, so exact-start dedup didn't catch it.
+
+Fixed both with a shared `eso.detection._overlap.collapse_overlapping_intervals`
+helper (non-max suppression by score, generalizing the pair-based collapse
+already built for recombination): sort by score descending, keep a candidate
+only if its range doesn't overlap an already-kept one's.
+
+### Benchmark
+
+One embedded repeat per sequence length, wall-clock time to detect it (row
+counts matched exactly at every length: 3/3, 3/3, 5/5, 8/8, 18/18, 36/36):
+
+| Length (nt) | `default` | `fast` | Faster mode |
+|---|---|---|---|
+| 315 | 0.026s | 0.055s | default (2.1x) |
+| 615 | 0.042s | 0.076s | default (1.8x) |
+| 1,215 | 0.092s | 0.112s | default (1.2x) |
+| 2,415 | 0.266s | 0.188s | fast (1.4x) |
+| 4,815 | 0.916s | 0.438s | fast (2.1x) |
+| 9,615 | 3.495s | 0.663s | fast (5.3x) |
+
+`default` is actually *faster* below ~1-2kb, then crosses over: its cost grows
+faster than `fast`'s as length increases (consistent with `default`'s
+per-candidate substring search vs. `fast`'s fixed-chunk frameshift scan). The
+gap is far smaller than recombination's (max ~5x here vs. ~1,900x there) at
+comparable lengths.
+
+### Recommendation
+
+- **`default`** for anything up to roughly 1-2kb (where it's comparable to or
+  faster than `fast`) - which covers ESO's typical gene-length use case.
+- **`fast`** past that, where its gentler scaling starts to win, and more so
+  as length keeps growing.
+- Unlike recombination, this is a **pure speed choice with no sensitivity
+  tradeoff** (verified via the 300-trial fuzz sweep) - so switching modes
+  never changes which hotspots get reported, only how long it takes.
+
 ---
 
-*Slippage and methylation detector comparisons: not yet done - see the open
-decisions list in the repo status summary.*
+*Methylation detector comparison: not yet done - see the open decisions list
+in the repo status summary.*

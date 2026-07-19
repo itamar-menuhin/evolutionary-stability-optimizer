@@ -1,6 +1,6 @@
 import pytest
 
-from eso.detection.dispatch import find_recombination_sites
+from eso.detection.dispatch import find_recombination_sites, find_slippage_sites
 
 SPACER = "ATCGGATCCAAGCTTGGATCCAAGCTTGGA"
 
@@ -48,3 +48,21 @@ def test_thorough_catches_centered_near_duplicate_that_fast_misses():
 def test_unknown_mode_raises():
     with pytest.raises(ValueError, match="Unknown recombination mode"):
         find_recombination_sites("ACGTACGTACGT", mode="nonexistent")
+
+
+def test_slippage_default_and_fast_modes_agree():
+    # Unlike recombination, both slippage modes are equivalent in sensitivity
+    # (verified via a 300-trial fuzz sweep, see docs/detector-comparisons.md) -
+    # this is purely a speed choice, so both modes should always agree.
+    seq = "ATGCTAAT" + "GCGCGCGC" + "TTAGGCATGCCTAGC"
+
+    df_default = find_slippage_sites(seq)
+    df_explicit = find_slippage_sites(seq, mode="default")
+    df_fast = find_slippage_sites(seq, mode="fast")
+
+    assert df_default.shape[0] == df_explicit.shape[0] == df_fast.shape[0] == 1
+
+
+def test_slippage_unknown_mode_raises():
+    with pytest.raises(ValueError, match="Unknown slippage mode"):
+        find_slippage_sites("ACGTACGTACGT", mode="nonexistent")

@@ -28,6 +28,9 @@ def build_parser():
                         help="'thorough' (default): Levenshtein-tolerant, catches near-duplicate hotspots, "
                              "best for gene-length sequences. 'fast': exact-match only, ~100x faster, "
                              "for much longer sequences (see eso.detection.dispatch).")
+    parser.add_argument('--slippage-mode', default='default', choices=['default', 'fast'],
+                        help="Both detect identical hotspots (unlike --recombination-mode); "
+                             "'fast' just scales better for longer (multi-kb+) sequences.")
     return parser
 
 
@@ -45,6 +48,7 @@ def main(argv=None):
         method=args.method,
         organism_name=args.organism_name,
         recombination_mode=args.recombination_mode,
+        slippage_mode=args.slippage_mode,
     )
     print(message)
     return 0 if message == 'Success!' else 1

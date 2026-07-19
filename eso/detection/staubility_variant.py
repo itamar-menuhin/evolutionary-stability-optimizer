@@ -18,6 +18,8 @@ import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import CountVectorizer
 
+from eso.detection._overlap import collapse_overlapping_intervals
+
 
 def genome_cutter(start, end, seq):
     return seq[start:end]
@@ -104,16 +106,23 @@ def find_slippage_sites_length_l(seq, length):
             end_of_range -= 1
 
         for ii in range(end_of_range):
+            # `length == 1` must be checked FIRST so Python's `and`
+            # short-circuits before touching curr_seq_split[ii + 2/3] when
+            # length > 1: end_of_range only reserves room up to ii+2 for that
+            # case, so evaluating the ii+3 access unconditionally (as in the
+            # original STABLES source) crashes with IndexError whenever a
+            # length>1 repeat sits at the boundary of its range - a real,
+            # previously-undiscovered bug found via fuzz testing.
             is_followed2 = (
-                curr_seq_split[ii] == curr_seq_split[ii + 1]
+                length > 1
+                and curr_seq_split[ii] == curr_seq_split[ii + 1]
                 and curr_seq_split[ii] == curr_seq_split[ii + 2]
-                and length > 1
             )
             is_followed1 = (
-                curr_seq_split[ii] == curr_seq_split[ii + 1]
+                length == 1
+                and curr_seq_split[ii] == curr_seq_split[ii + 1]
                 and curr_seq_split[ii] == curr_seq_split[ii + 2]
                 and curr_seq_split[ii] == curr_seq_split[ii + 3]
-                and length == 1
             )
 
             if is_followed2:
@@ -130,7 +139,9 @@ def find_slippage_sites_length_l(seq, length):
     df_slippage.loc[:, 'end_delta'] = df_slippage['end'].shift(-1) - df_slippage['end']
     df_slippage = df_slippage[(df_slippage.start_delta != 1.0) | (df_slippage.end_delta != 1.0)]
     df_slippage.loc[(df_slippage.end_delta == 1.0), 'end'] = None
-    df_slippage.loc[:, 'end'] = df_slippage.loc[:, 'end'].bfill().astype(int)
+    # see the identical fix in find_recombination_sites above: whole-column
+    # reassignment is required for .astype(int) to actually stick here
+    df_slippage['end'] = df_slippage.loc[:, 'end'].bfill().astype(int)
     df_slippage = df_slippage[df_slippage.start_delta != 1.0][['start', 'end']]
 
     df_slippage.loc[:, 'end'] = (
@@ -158,6 +169,17 @@ def find_slippage_sites(seq, num_sites=np.inf):
         -12.9 + 0.729 * df_slippage['num_base_units']
     )
 
+    # this filter was applied by the STABLES caller (STABLES_full_code's
+    # optimization pipeline), not inside find_slippage_sites itself - lost
+    # when this function was extracted in isolation. Restored here so the
+    # function is self-contained and consistent with its sibling
+    # find_recombination_sites above, which does filter internally.
+    df_slippage = df_slippage[df_slippage.log10_prob_slippage_ecoli > -9]
+
+    # see eso.detection.slippage.find_slippage_sites for why exact-start dedup
+    # isn't enough - phase-shifted/differently-lengthed detections of the same
+    # physical repeat need an overlap-based collapse instead.
+    df_slippage = collapse_overlapping_intervals(df_slippage, score_col='log10_prob_slippage_ecoli')
     df_slippage = df_slippage.sort_values(['log10_prob_slippage_ecoli', 'length_base_unit'], ascending=[False, False])
 
     if num_sites < np.inf:

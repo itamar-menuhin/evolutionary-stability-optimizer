@@ -7,9 +7,11 @@ def test_finds_dinucleotide_repeat():
     seq = "ATGCTAAT" + "GCGCGCGC" + "TTAGGCATGCCTAGC"
     df = find_slippage_sites(seq)
 
-    matches = df[df.sequence.str.contains("GCGCGCGC")]
-    assert not matches.empty
-    row = matches.iloc[0]
+    # collapsed to exactly one row: "GCGCGCGC" starting at position 8 and its
+    # 1-shifted reading "CGCGCG" starting at position 9 are the same physical
+    # repeat and must not be reported as two separate sites.
+    assert df.shape[0] == 1
+    row = df.iloc[0]
     assert row.length_base_unit == 2
     assert row.num_base_units == 4
 

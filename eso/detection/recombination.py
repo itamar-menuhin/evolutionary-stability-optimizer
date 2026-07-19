@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 from Levenshtein import distance as levenshtein_distance
 
+from eso.detection._overlap import ranges_overlap
 from eso.sequence_utils import add_backward_sites, shorten_sequences
 
 # matches the columns actually produced by the non-empty path below
@@ -138,10 +139,6 @@ def calc_recombination_score(location_delta, site_length):
     return np.log10(recombination_probability)
 
 
-def _ranges_overlap(a, b):
-    return a[0] <= b[1] and b[0] <= a[1]
-
-
 def _collapse_overlapping_pairs(df_pairs):
     """Different seed 16-mers for the same real hotspot converge, via
     elongation, to slightly different (start, end) extents rather than one
@@ -158,7 +155,7 @@ def _collapse_overlapping_pairs(df_pairs):
     for _, row in df_pairs.sort_values('log10_prob_recombination_ecoli', ascending=False).iterrows():
         range_1 = (row.start_1, row.end_1)
         range_2 = (row.start_2, row.end_2)
-        if any(_ranges_overlap(range_1, r1) and _ranges_overlap(range_2, r2) for r1, r2 in kept_ranges):
+        if any(ranges_overlap(range_1, r1) and ranges_overlap(range_2, r2) for r1, r2 in kept_ranges):
             continue
         kept_rows.append(row)
         kept_ranges.append((range_1, range_2))

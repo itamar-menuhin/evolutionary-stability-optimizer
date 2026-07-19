@@ -9,6 +9,8 @@ Synthetic Biology, DOI: 10.1021/acssynbio.5b00068).
 import numpy as np
 import pandas as pd
 
+from eso.detection._overlap import collapse_overlapping_intervals
+
 SLIPPAGE_COLUMNS = ['start', 'end', 'length_base_unit', 'sequence']
 
 
@@ -101,8 +103,16 @@ def find_slippage_sites(seq, num_sites=np.inf):
     )
 
     df_slippage = df_slippage[df_slippage.log10_prob_slippage_ecoli > -9]
+
+    # different base-unit lengths (and different phase offsets within the same
+    # length) can each detect the same physical repeat as a separate row -
+    # e.g. "GCGCGCGC" is a valid length-2 run starting at position N, AND its
+    # 1-shifted substring "CGCGCG" is a separate valid length-2 run starting
+    # at N+1. Collapsing by exact 'start' alone (the original approach) misses
+    # this, since the rows don't share a start position. Keep one
+    # representative (highest scoring) per group of overlapping ranges instead.
+    df_slippage = collapse_overlapping_intervals(df_slippage, score_col='log10_prob_slippage_ecoli')
     df_slippage = df_slippage.sort_values(['log10_prob_slippage_ecoli', 'length_base_unit'], ascending=[False, False])
-    df_slippage = df_slippage.drop_duplicates(subset="start")
 
     if num_sites < np.inf:
         df_slippage = df_slippage.head(num_sites)
