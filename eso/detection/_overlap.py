@@ -10,7 +10,17 @@ import pandas as pd
 
 
 def ranges_overlap(a, b):
-    return a[0] <= b[1] and b[0] <= a[1]
+    """True if ranges (start, end) overlap, using the same exclusive-end
+    convention as Python slicing (seq[start:end]) - so two ranges that merely
+    touch at a shared boundary (e.g. (0, 950) and (950, 1250)) do NOT count
+    as overlapping, since they share no actual character position. A
+    previous `<=` version treated touching-but-adjacent ranges as
+    overlapping, which silently discarded a genuinely distinct, adjacent
+    hotspot whenever it happened to sit immediately next to a higher-scoring
+    one - found via a chunk-boundary stress test for an unrelated prototype,
+    reproduced with two homopolymer runs separated by a third with no gap.
+    """
+    return a[0] < b[1] and b[0] < a[1]
 
 
 def collapse_overlapping_intervals(df, score_col, start_col='start', end_col='end'):

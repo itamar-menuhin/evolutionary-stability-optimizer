@@ -6,6 +6,37 @@ one detector type at a time, what was actually tested, what bugs were found and
 fixed along the way, and the resulting recommendation for which mode to use
 when.
 
+## Cross-cutting bug: `ranges_overlap` treated touching ranges as overlapping
+
+Found while building and stress-testing a (still-experimental, not adopted -
+see below) regex prefilter for slippage detection, not during the original
+overlap-collapse work itself. `eso.detection._overlap.ranges_overlap` used
+`a[0] <= b[1] and b[0] <= a[1]`, which is correct for *inclusive*-end ranges
+but wrong here: `(start, end)` throughout this codebase uses Python-slicing
+*exclusive*-end semantics (`seq[start:end]`), so a range ending at 950 and one
+starting at 950 share no actual character - they merely touch. The `<=`
+version counted that as overlapping, so `collapse_overlapping_intervals`
+(used by both recombination and slippage) would silently discard a
+genuinely distinct, adjacent, lower-scoring hotspot whenever it happened to
+sit immediately next to a higher-scoring one - e.g. `"A"*950 + "T"*300 +
+"A"*950` reported only the two flanking A-runs and dropped the T-run
+entirely. Fixed to strict inequality (`a[0] < b[1] and b[0] < a[1]`).
+
+This was a real correctness regression in already-shipped code (introduced
+when `collapse_overlapping_intervals` was built for the redundancy fixes
+above), not something the regex prefilter work introduced - it was already
+live before this was found. Verified via `tests/test_detection_overlap.py`
+and a regression test in `tests/test_detection_slippage.py`, plus the full
+300-trial fuzz sweep and test suite. One narrow, pre-existing, now-*exposed*
+difference surfaced as a side effect: `eso.detection.slippage` and
+`eso.detection.staubility_variant` can independently pick a different
+1-position phase for a length>1 periodic region that sits immediately next
+to another repeat (e.g. reporting `"TCTCTC"` vs `"CTCTCT"` for the same
+physical alternating run) - both readings are individually valid, and the
+buggy `<=` check had been masking this by discarding both in the same
+direction. Not a correctness bug, just a documented quirk of two
+independently-developed algorithms; observed in 1/300 fuzz trials.
+
 ## Recombination detection
 
 Two implementations, both scoring with the identical empirical EFM Calculator

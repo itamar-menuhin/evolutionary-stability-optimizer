@@ -76,6 +76,20 @@ def test_homopolymer_run_of_12_is_the_first_to_win_as_length_1():
     assert hit.iloc[0].num_base_units == 12
 
 
+def test_adjacent_distinct_repeats_are_both_reported():
+    # Regression test: two genuinely distinct repeats sitting immediately
+    # next to each other (no gap) used to have the lower-scoring one
+    # silently discarded, because the overlap check treated touching-but-
+    # non-overlapping ranges as overlapping (see test_detection_overlap.py).
+    seq = "A" * 950 + "T" * 300 + "A" * 950
+    df = find_slippage_sites(seq)
+    assert df.shape[0] == 3
+
+    t_run = df[df.sequence.str.contains("TTT")]
+    assert not t_run.empty
+    assert t_run.iloc[0].num_base_units == 300
+
+
 def test_modify_df_slippage_splits_into_alternating_units():
     seq = "ATGCTAAT" + "GCGCGCGC" + "TTAGGCATGCCTAGC"
     df = find_slippage_sites(seq)
