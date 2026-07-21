@@ -1,3 +1,5 @@
+import pytest
+
 from eso.detection.recombination import find_recombination_sites, calc_recombination_score
 
 # non-repetitive spacer: a homopolymer/simple-repeat spacer would itself be a
@@ -68,3 +70,24 @@ def test_calc_recombination_score_decreases_with_distance():
     close = calc_recombination_score(location_delta=5, site_length=20)
     far = calc_recombination_score(location_delta=500, site_length=20)
     assert close > far
+
+
+def test_calc_recombination_score_matches_efm_calculator_reference():
+    # Pins the formula to the authoritative reference implementation
+    # (github.com/barricklab/efm-calculator, get_recombo_rate, E. coli/yeast
+    # case) - not just our own internal consistency. Confirmed via that
+    # repo's git history that a=8.8 has been the value since its first
+    # commit (2015-03-31); this codebase had inherited a wrong a=5.8 from
+    # ESO_curr/STABLES (see calc_recombination_score's docstring).
+    import math
+
+    def efm_reference(location_delta, site_length):
+        return math.log10(
+            ((8.8 + location_delta) ** (-29.0 / site_length))
+            * (site_length / (1 + 1465.6 * site_length))
+        )
+
+    for location_delta, site_length in [(1, 16), (5, 20), (100, 30), (500, 50)]:
+        ours = calc_recombination_score(location_delta, site_length)
+        reference = efm_reference(location_delta, site_length)
+        assert ours == pytest.approx(reference, abs=1e-9)

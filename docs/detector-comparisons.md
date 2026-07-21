@@ -39,6 +39,61 @@ independently-developed algorithms; observed in 1/300 fuzz trials.
 
 ## Recombination detection
 
+### Cross-validated against the authoritative reference implementation - and found a real bug
+
+Prompted by a direct ask to look for libraries or reference sources that
+would *increase trust*, not just speed - the strongest trust signal
+available wasn't a library at all, but the actual reference tool this whole
+scoring model is based on: the EFM Calculator
+([github.com/barricklab/efm-calculator](https://github.com/barricklab/efm-calculator)),
+whose `get_recombo_rate()` implements the same formula shape
+`calc_recombination_score` does. Comparing them directly (fetched the source
+via `gh`/web fetch, not from memory) found a real discrepancy: our constant
+was `a=5.8`; the reference uses `a=8.8`.
+
+Checked the reference repo's full commit history before concluding anything
+- `8.8` has been the value since the very first commit (2015-03-31),
+already attributed in that commit's own docstring to "the Oliviera, et al.
+formula" (a citation distinct from the Jack et al. 2015 EFM Calculator paper
+this codebase's docstrings cite for the tool overall). There is no point in
+the reference tool's history where `5.8` was ever correct - so this isn't a
+case of two legitimately different published versions; `5.8` appears to be a
+plain transcription error that entered somewhere in ESO_curr/STABLES'
+history and was faithfully carried through the port.
+
+**Quantified impact**: the `a=5.8` version systematically *overestimates*
+recombination risk (less-negative log10 score) by up to ~0.29 at short
+range/site length (e.g. location_delta=1, site_length=16: -4.675 vs. the
+correct -4.963) - enough to flip a result right at the `-9` filter cutoff,
+i.e. a real false-positive risk at the margin, not just a cosmetic score
+difference.
+
+Fixed in both `eso.detection.recombination.calc_recombination_score` and
+`eso.detection.staubility_variant.find_recombination_sites` (the formula is
+duplicated between them). Verified two ways: `calc_recombination_score` now
+matches the reference formula to floating-point precision
+(`test_calc_recombination_score_matches_efm_calculator_reference`), and a
+100-trial fuzz sweep confirms the change doesn't affect the underlying
+near-duplicate *detection* ability (still 0 misses) - only the risk score
+itself, as intended.
+
+**Two other library candidates were investigated for this same "increase
+trust" goal and ruled out** (not adopted, no code changes):
+- **`rapidfuzz`**'s bounded/early-exit batch distance search, as a possible
+  correctness cross-check or replacement for the neighbor-generation
+  matching in `thorough` - algorithmically worse at scale (still O(n^2) all-pairs
+  under the hood) despite a faster per-comparison constant; see the
+  "Implementation-level optimization" section below for the benchmark.
+- **A regex backreference-based rewrite of slippage detection** - a real
+  ~20-44x raw speedup on the candidate-scan sub-step, but a genuine
+  correctness gap (nested short-period-inside-a-longer-repeat cases missed
+  in ~9.9% of randomized trials) that would need real design work to close;
+  a follow-up chunked-prefilter design was fully validated for correctness
+  (0 mismatches across ~1,100 fuzz + boundary-stress trials) but provided
+  no real-world speedup, since realistic/random DNA almost always contains
+  *some* incidental short repeat in any multi-kb window, so the "skip empty
+  regions" strategy essentially never fires. Not adopted either way.
+
 Two implementations, both scoring with the identical empirical EFM Calculator
 formula, differing only in how they decide two sites are "the same":
 

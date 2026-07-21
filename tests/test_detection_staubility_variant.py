@@ -4,6 +4,8 @@ router for recombination. Slippage isn't wired into dispatch (both
 implementations agree after the fixes below), so it needs its own coverage.
 """
 
+import pytest
+
 from eso.detection.staubility_variant import find_recombination_sites, find_slippage_sites
 
 
@@ -73,3 +75,25 @@ def test_no_redundant_rows_for_same_start_competing_lengths():
     seq = "ATGCTAGCCATTAGGC" + "TTTTTT" + "ATGCCTAGCATGC"
     df = find_slippage_sites(seq)
     assert df.shape[0] == 1
+
+
+def test_recombination_score_matches_efm_calculator_reference():
+    # Same fix and same reference cross-check as
+    # eso.detection.recombination.test_calc_recombination_score_matches_efm_calculator_reference -
+    # this module duplicates the formula inline rather than calling the
+    # shared function, so it needs its own pin against the reference.
+    import math
+
+    site = "ACGTGGCATTAGCTAGCCTA"  # 20nt
+    seq = "ATGCATGCAT" + site + "ATCGGATCCAAGCTTGGATCCAAGCTTGGA" + site + "TTGGCCAATT"
+    df = find_recombination_sites(seq)
+    assert not df.empty
+
+    row = df.iloc[0]
+    location_delta = row.start_2 - row.end_1
+    site_length = row.end_1 - row.start_1
+    reference = math.log10(
+        ((8.8 + location_delta) ** (-29.0 / site_length))
+        * (site_length / (1 + 1465.6 * site_length))
+    )
+    assert row.log10_prob_recombination_ecoli == pytest.approx(reference, abs=1e-6)

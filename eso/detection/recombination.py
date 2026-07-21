@@ -144,8 +144,24 @@ def _elongate_sites(row, full_seq):
 
 
 def calc_recombination_score(location_delta, site_length):
-    """Empirical log10 probability of recombination-mediated deletion (EFM Calculator paper)."""
-    a, b, c, alpha = 5.8, 1465.6, 0, 29
+    """Empirical log10 probability of recombination-mediated deletion.
+
+    Formula per the EFM Calculator (github.com/barricklab/efm-calculator,
+    get_recombo_rate, E. coli/yeast case), which attributes it to Oliveira et
+    al. rather than to Jack et al. 2015 (the EFM Calculator's own paper, cited
+    at the module level - that paper describes the tool, not necessarily the
+    origin of this specific sub-formula).
+
+    a=8.8, not the 5.8 this codebase inherited from ESO_curr/STABLES: checked
+    against the reference tool's git history and 8.8 has been the value since
+    its first commit (2015-03-31), predating and unrelated to any later
+    revision - so 5.8 was not an earlier "correct" value that changed, it
+    appears to simply be a transcription error carried through ESO's history.
+    Confirmed measurable impact: the a=5.8 version systematically overestimates
+    risk (less-negative log10 score) by up to ~0.29 at short range/site
+    length, enough to flip results right at the -9 filter cutoff.
+    """
+    a, b, c, alpha = 8.8, 1465.6, 0, 29
 
     first_component = a + location_delta
     second_component = -1 * (alpha / site_length)

@@ -70,7 +70,10 @@ def find_recombination_sites(seq, num_sites=np.inf):
     df_recombination.loc[:, 'location_delta'] = df_recombination.start_2 - df_recombination.end_1
     df_recombination.loc[:, 'site_length'] = df_recombination.end_1 - df_recombination.start_1
 
-    a, b, c, alpha = 5.8, 1465.6, 0, 29
+    # a=8.8 per the EFM Calculator reference implementation (see
+    # eso.detection.recombination.calc_recombination_score's docstring for
+    # the full story - this codebase inherited a wrong 5.8 from ESO_curr/STABLES).
+    a, b, c, alpha = 8.8, 1465.6, 0, 29
     base = a + df_recombination['location_delta']
     exponent = -1 * alpha / df_recombination['site_length']
     scale = df_recombination['site_length'] / (
