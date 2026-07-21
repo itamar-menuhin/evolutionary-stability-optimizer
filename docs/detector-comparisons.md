@@ -249,6 +249,26 @@ Growth is now roughly linear-to-mildly-superlinear rather than quadratic -
 put it at tens of minutes. This is why the recommendation above changed: the
 practical crossover to `fast` moved from ~1-2kb out to the tens of kb.
 
+**Re-verified after the `ranges_overlap` and `a=5.8→8.8` fixes below**, since
+neither is a no-op on timing even though neither changes algorithmic
+complexity: `a=8.8` gives systematically lower (more negative) scores, so
+fewer marginal candidates survive the `-9` filter before the expensive
+elongation/collapse steps, which measurably *helps*:
+
+| Length (nt) | `thorough` (current) | `fast` (current) |
+|---|---|---|
+| 400 | 0.255s | 0.017s |
+| 3,400 | 0.431s | 0.014s |
+| 6,600 | 0.748s | 0.020s |
+| 13,000 | 1.099s | 0.041s |
+| 25,800 | 2.202s | 0.077s |
+| 51,400 | 4.311s | 0.219s |
+
+Consistently faster than the table above (e.g. 51,300nt: 6.527s -> 4.311s),
+but the *shape* of the recommendation is unchanged - `thorough` vs. `fast`'s
+ratio is still ~20-27x in this range, so the crossover guidance above still
+holds exactly as stated.
+
 ## Slippage detection
 
 Two implementations of the same SSR (short tandem repeat) concept:
@@ -464,6 +484,24 @@ performance reason to reach for it. Left the mode API and default
 (`mode="default"`) as-is rather than renaming or deprecating `"fast"` -
 worth revisiting if `staubility_variant`'s own `.find()`-per-candidate
 pattern (used for its recombination detector too) gets the same fix.
+
+**Re-verified after the `ranges_overlap` and recombination-formula fixes**
+(neither touches slippage's code paths, so this is mainly a check that
+nothing regressed, not an expected improvement):
+
+| Length (nt) | `default` (current) | `fast` (current) |
+|---|---|---|
+| 345 | 0.014s | 0.032s |
+| 1,245 | 0.022s | 0.075s |
+| 9,645 | 0.126s | 0.434s |
+| 20,030 | 0.248s | 0.847s |
+| 100,030 | 1.178s | 6.023s |
+| 300,030 | 3.661s | 39.066s |
+
+Within normal run-to-run variance of the table above (as expected - neither
+fix touches this code), and the conclusion is identical: `default` wins at
+every length, gap widening with size (~10.7x at 300k here vs. ~10.2x
+previously - same story).
 
 ---
 
