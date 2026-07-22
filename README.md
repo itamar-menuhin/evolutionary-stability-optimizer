@@ -63,9 +63,10 @@ That's the whole loop. Everything below this point is reference material for goi
 further (different host organisms, custom scoring, locking regions from editing, and so
 on) - not required to get a first result.
 
-If you'd rather be walked through setup interactively instead of reading this file, see
-[`docs/custom-gpt-setup.md`](docs/custom-gpt-setup.md) for a ready-to-use ChatGPT
-assistant configured specifically for onboarding onto this tool.
+If you'd rather be walked through setup interactively instead of reading this file, try the
+[ESO Onboarding Assistant](https://chatgpt.com/g/g-6a60d7b081108191a8bc208b89958267-eso-onboarding-assistant),
+a ChatGPT assistant configured specifically for onboarding onto this tool (see
+[`docs/custom-gpt-setup.md`](docs/custom-gpt-setup.md) for its configuration).
 
 ## Troubleshooting
 

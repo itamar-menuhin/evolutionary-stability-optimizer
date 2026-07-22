@@ -6,16 +6,10 @@ function, and integrating ESO into her own Python code. Custom GPTs can only be 
 through the ChatGPT UI (requires a ChatGPT Plus/Team/Enterprise account) - there's no API
 for it, so this doc gives you copy-paste content plus the exact clicks.
 
-**Status: already created and live**, shared as "Anyone with the link." That link is
-deliberately **not** recorded anywhere in this repo, including here - it's the actual
-access control for a GPT whose knowledge includes an accepted-manuscript PDF that was
-kept out of git specifically to avoid public redistribution (see section 6 below). Once
-this repo goes public, anything committed to it is effectively public forever (recoverable
-from history even if later deleted) - a link that grants access to copyrighted content
-doesn't belong here for the same reason the PDF itself doesn't. Share the live link with
-your colleague directly (email, Slack, whatever channel you'd already use to send her
-something private) instead. Everything below remains useful on its own as a way to
-recreate or update the GPT's configuration.
+**Status: already created and live** -
+[ESO Onboarding Assistant](https://chatgpt.com/g/g-6a60d7b081108191a8bc208b89958267-eso-onboarding-assistant).
+Everything below remains useful on its own as a way to recreate or update its
+configuration.
 
 ## 1. Create the GPT
 
