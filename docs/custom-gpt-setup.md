@@ -104,11 +104,15 @@ and to reach out to whoever shared this GPT with her.
 In the Configure tab, just below Instructions, there's a "Conversation starters" section
 - these show as clickable chips when someone opens the GPT with a blank conversation,
 which matters most for a first-time user who doesn't know what to ask yet. The chips
-truncate long text with an ellipsis, so keep these short - add these four, one per tier
-of help:
+truncate long text with an ellipsis, so keep these short. "Install ESO for the first
+time" only covers first-time setup, not ongoing day-to-day CLI usage (running it on a new
+file, common flags), so that gets its own starter too - five total:
 
 ```
 Install ESO for the first time
+```
+```
+Run ESO on my own sequence file
 ```
 ```
 Write a custom scoring function
@@ -120,10 +124,12 @@ Use ESO from my own Python code
 How does this differ from the paper?
 ```
 
-That last one is worth keeping even though it's the most advanced starter - it invites
-exactly the question docs/paper-vs-implementation.md exists to answer well (the site-limit
-and recombination-matching defaults that don't match the paper), rather than leaving her
-to discover those differences the hard way by comparing outputs herself.
+If the Configure tab only gives you four slots, drop "How does this differ from the
+paper?" first - it's the most advanced of the five and the least likely to be someone's
+very first question, even though it's worth keeping if there's room (it invites exactly
+the question docs/paper-vs-implementation.md exists to answer well - the site-limit and
+recombination-matching defaults that don't match the paper - rather than leaving her to
+discover those differences the hard way by comparing outputs herself).
 
 ## 6. Knowledge files
 
