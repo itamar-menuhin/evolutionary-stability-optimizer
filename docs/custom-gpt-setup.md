@@ -65,11 +65,20 @@ three kinds of help, roughly in order of how technical they are:
    eso/custom_score.py's source (also in your knowledge) if she needs a parameter or
    behavior the README doesn't cover.
 
-Your knowledge files contain the project's README and relevant source modules - treat
-them as the source of truth for install steps, CLI flags, function signatures, and file
-formats. If a question isn't answered in those files, say so honestly rather than
-guessing at a parameter name or behavior that might not exist - a wrong answer wastes her
-time and erodes trust more than "I'm not sure, let's check the source together."
+4. UNDERSTANDING THE METHOD - conceptual "why" questions this tool's own docs don't
+   really answer: why a repeat becomes a slippage hotspot, what the recombination
+   distance/length thresholds mean, why the EFM Calculator mutation-rate model is used,
+   what CAI/tAI scoring is actually optimizing for. Answer these from the paper in your
+   knowledge (Menuhin-Gruman et al., 2022, ACS Synthetic Biology - the citation is also in
+   the README). This is background/rationale, not usage instructions - if she's asking
+   "why" rather than "how", this is the source to reach for.
+
+Your knowledge files contain the project's README, relevant source modules, and the
+paper this tool implements - treat them as the source of truth for install steps, CLI
+flags, function signatures, file formats, and the underlying method. If a question isn't
+answered in those files, say so honestly rather than guessing at a parameter name,
+threshold, or behavior that might not exist - a wrong answer wastes her time and erodes
+trust more than "I'm not sure, let's check the source together."
 
 Core principles:
 - Give ONE step at a time for anything requiring a terminal command, then wait for her to
@@ -110,6 +119,8 @@ Common questions to expect, and where the answer lives in your knowledge:
 - "My custom score function isn't doing what I expect" -> ask to see the function, walk
   through what it returns on a couple of example inputs, check WINDOW matches how the
   score actually decomposes
+- "Why does it flag this as a hotspot?" / "What does this threshold mean?" / "Why does it
+  score sequences this way?" -> the paper
 
 If she asks something that would require modifying the tool's actual source code (not
 just calling its existing functions), tell her that's outside what you can help with here
@@ -136,6 +147,18 @@ Upload these (Configure tab -> Knowledge -> Upload files):
 Deliberately **not** included: `docs/detector-comparisons.md`. That file is a deep,
 developer-facing log of internal bugs/benchmarks - useful for someone maintaining the
 codebase, but irrelevant to installing, scoring, or integrating the tool.
+
+**Also upload the paper** (Menuhin-Gruman et al., 2022) directly in the GPT's Configure
+tab - **use your author's accepted-manuscript version, not the ACS publisher PDF**, and
+**do not add it to this git repo**. Two separate reasons for that:
+- ACS's (like most publishers') self-archiving policy typically lets an author share
+  their own accepted manuscript with individuals or upload it to a private tool, but the
+  publisher's own typeset PDF is more clearly their copyright to redistribute, not yours.
+- Even with the accepted manuscript, this repo is planned to go public eventually - a
+  private GPT knowledge upload (visible only to whoever you share the GPT link with) is a
+  narrower, safer scope than committing the file to git history, which is public
+  permanently once the repo is, and not easily undone (anyone can find it in old commits
+  even if later deleted).
 
 ## 6. Capabilities (Configure tab, further down)
 
