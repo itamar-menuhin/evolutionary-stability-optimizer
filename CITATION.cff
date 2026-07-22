@@ -1,0 +1,38 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the paper it implements."
+title: "Evolutionary Stability Optimizer (ESO)"
+type: software
+authors:
+  - family-names: "Menuhin"
+    given-names: "Itamar"
+license: MIT
+repository-code: "https://github.com/itamar-menuhin/evolutionary-stability-optimizer"
+preferred-citation:
+  type: article
+  title: "Evolutionary Stability Optimizer (ESO): A Novel Approach to Identify and Avoid Mutational Hotspots in DNA Sequences While Maintaining High Expression Levels"
+  authors:
+    - family-names: "Menuhin-Gruman"
+      given-names: "Itamar"
+    - family-names: "Arbel"
+      given-names: "Matan"
+    - family-names: "Amitay"
+      given-names: "Niv"
+    - family-names: "Sionov"
+      given-names: "Karin"
+    - family-names: "Naki"
+      given-names: "Doron"
+    - family-names: "Katzir"
+      given-names: "Itai"
+    - family-names: "Edgar"
+      given-names: "Omer"
+    - family-names: "Bergman"
+      given-names: "Shaked"
+    - family-names: "Tuller"
+      given-names: "Tamir"
+  journal: "ACS Synthetic Biology"
+  volume: 11
+  issue: 3
+  start: 1142
+  end: 1151
+  year: 2022
+  doi: "10.1021/acssynbio.1c00426"

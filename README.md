@@ -1,8 +1,14 @@
 # ESO - Evolutionary Stability Optimizer
 
+[![Tests](https://github.com/itamar-menuhin/evolutionary-stability-optimizer/actions/workflows/tests.yml/badge.svg)](https://github.com/itamar-menuhin/evolutionary-stability-optimizer/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+
 ESO detects hypermutable sites in engineered DNA sequences and optimizes them away with
 [DNAChisel](https://github.com/Edinburgh-Genome-Foundry/DNAChisel), while preserving the
-amino-acid translation and optimizing for host codon usage.
+amino-acid translation and optimizing for host codon usage. This implementation follows
+the approach introduced in Menuhin-Gruman et al. (2022, *ACS Synthetic Biology*) - see
+[Citation](#citation) below.
 
 Genes built from repetitive or duplicated DNA elements (a side effect of standard codon
 optimization, which tends to reuse the same "best" codon repeatedly) are prone to mutate
@@ -351,6 +357,33 @@ methylation motifs - look up the motif there and pass it straight to
 ```bash
 poetry install --with dev
 pytest
+```
+
+## Citation
+
+If you use this tool, please cite the paper it implements:
+
+> Menuhin-Gruman, I., Arbel, M., Amitay, N., Sionov, K., Naki, D., Katzir, I., Edgar, O.,
+> Bergman, S., & Tuller, T. (2022). Evolutionary Stability Optimizer (ESO): A Novel
+> Approach to Identify and Avoid Mutational Hotspots in DNA Sequences While Maintaining
+> High Expression Levels. *ACS Synthetic Biology*, 11(3), 1142-1151.
+> https://doi.org/10.1021/acssynbio.1c00426
+
+```bibtex
+@article{menuhingruman2022eso,
+  title   = {Evolutionary Stability Optimizer (ESO): A Novel Approach to Identify and
+             Avoid Mutational Hotspots in DNA Sequences While Maintaining High
+             Expression Levels},
+  author  = {Menuhin-Gruman, Itamar and Arbel, Matan and Amitay, Niv and Sionov, Karin
+             and Naki, Doron and Katzir, Itai and Edgar, Omer and Bergman, Shaked
+             and Tuller, Tamir},
+  journal = {ACS Synthetic Biology},
+  volume  = {11},
+  number  = {3},
+  pages   = {1142--1151},
+  year    = {2022},
+  doi     = {10.1021/acssynbio.1c00426}
+}
 ```
 
 ## License
