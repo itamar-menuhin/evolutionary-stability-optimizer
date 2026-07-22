@@ -3,6 +3,7 @@ name = "eso"
 version = "0.1.0"
 description = "Evolutionary Stability Optimizer (ESO) - detects and removes hypermutable sites (recombination, slippage, methylation hotspots) from engineered DNA sequences while preserving translation and codon usage."
 authors = ["Itamar Menuhin"]
+license = "MIT"
 readme = "README.md"
 packages = [{ include = "eso" }]
 include = ["eso/data/*.csv"]

@@ -352,3 +352,7 @@ methylation motifs - look up the motif there and pass it straight to
 poetry install --with dev
 pytest
 ```
+
+## License
+
+[MIT](LICENSE)
