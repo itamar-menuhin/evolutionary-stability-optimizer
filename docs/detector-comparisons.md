@@ -916,3 +916,117 @@ This closes out the module-by-module review pass across the rest of `eso/`
 `report.py`) that followed the same detector comparisons above - five
 previously-untested modules, five real bugs found and fixed, all documented
 here alongside the detector work.
+
+## eso.pipeline - a crash on unrecognized organisms, and a filename-stem bug
+
+Following on directly from the module review above: `pipeline.py` and
+`cli.py` hadn't been directly exercised yet. Reviewing `pipeline.py` found
+two real bugs.
+
+`_extract_cai` parsed DNAChisel's `objectives_text_summary()` output as
+`text.split('\n')[0].split(':')[1].strip()` unconditionally. When
+`organism_name` isn't recognized (and no `custom_score_fn` is given),
+`_codon_optimization_objectives` returns `[]` and DNAChisel summarizes the
+(empty) objective list as `'===> No specifications\n\n'` - no colon to split
+on, so `.split(':')[1]` raised an unhandled `IndexError`. Confirmed directly
+via a full `pipeline.main()` call with `organism_name='not_a_real_organism_xyz'`.
+Fixed by returning `None` when there's no colon to parse, and updating
+`backend()`'s report writer to say plainly that no codon-usage objective was
+applied, instead of crashing.
+
+Separately, `backend()` (and `io_utils.exclusion_gc_tester`) derived a
+file's stem via `path.basename(file[0]).split('.')[0]` to look it up in the
+user-supplied `indexes` dict - `.split('.')[0]` truncates at the *first*
+dot, so a file named e.g. `sample.2024.fasta` silently became the stem
+`sample` instead of `sample.2024`. Any `indexes` entry keyed on the intended
+full stem would then simply never match, silently falling back to no
+ORF/exclusion regions rather than erroring. Fixed by adding
+`eso.io_utils.file_stem` (strips a trailing `.gz` if present, then takes one
+`path.splitext` level) and using it in both call sites. Verified directly
+against `gene.fasta`, `sample.2024.fasta`, `sample.fasta.gz`, and
+`sample.2024.fasta.gz`.
+
+## eso.optimize - a genuine DNAChisel-internal crash, investigated to its root cause
+
+While testing `pipeline.py` against real detector output (rather than
+hand-crafted dataframes), a specific but realistic scenario crashed:
+resolving an `AvoidPattern` constraint whose location doesn't align to the
+codon grid under `EnforceTranslation` (e.g. `modify_df_slippage`'s
+per-occurrence windows for a 2nt "GC" repeat, or a 1nt homopolymer run,
+starting mid-codon) could make DNAChisel's
+`DnaOptimizationProblem.resolve_constraint` compute a "jointly mutable"
+mutation-space region (accounting for codon interdependencies) that ends up
+not overlapping the constraint's own declared location at all.
+`AvoidPattern.localized()` correctly returns `None` for that (they genuinely
+don't overlap) - but DNAChisel's own caller doesn't guard against that
+`None` before calling `.evaluate()` on it, crashing with
+`AttributeError: 'NoneType' object has no attribute 'evaluate'`. Confirmed
+via monkeypatch tracing of the exact call and its `None` return, and
+reproduced directly: a codon-unaligned 2nt "GC" repeat and, separately, a
+1nt homopolymer run both crash; a codon-aligned 3nt repeat unit never does
+(see `test_slippage_avoidance_disrupts_the_repeat`, pre-existing and never
+affected).
+
+The first fix attempted was to widen every avoid-window outward to the
+nearest enclosing codon boundaries before building the `AvoidPattern`
+(confirmed separately that `AvoidPattern` doesn't require its search pattern
+to fill the whole `location` - only the *location* needs widening, not the
+literal pattern). This did stop the crash for the "GC" repeat case
+(9 edits, repeat disrupted) - but testing it against a pure `T`-homopolymer
+landing on all-Phe codons (`TTT`/`TTC`, both of which always contain a T)
+exposed a subtler problem: widening turns "avoid this pattern at this exact
+position" into "avoid this pattern *anywhere* in the whole codon", which for
+a single-nucleotide pattern in a homopolymer run is unsatisfiable for every
+codon in the run (there's no Phe codon without a T), so every widened
+constraint got dropped by the retry loop and the homopolymer survived
+completely untouched - no crash, but also silently no effect
+(`num_edits=0`), which is arguably as bad as the original crash for the
+tool's actual purpose.
+
+Given that tension, the codon-widening approach was abandoned in favor of a
+narrower fix: catch this exact crash (matched by its message, so no other
+`AttributeError` gets silently swallowed) in `optimization_engine`'s retry
+loop, and handle it exactly like DNAChisel's own "final consistency check
+failed without naming a culprit constraint" case already did - re-evaluate
+every constraint and drop whichever ones are still actually failing. This
+never asks DNAChisel for anything harder than what was originally detected;
+it just means a site whose *only* narrow, well-targeted disruption
+constraint is what triggers the crash gets dropped (silently, for now - see
+below) rather than the tool crashing or falsely reporting success while
+quietly doing nothing. Verified directly: the "GC" repeat case still
+resolves with edits made (`num_edits=9`, deterministic across 5 repeated
+runs); the `T`-homopolymer case no longer crashes and produces a valid,
+translation-preserving sequence (`num_edits=0` - genuinely unsatisfiable
+under this codon usage table, not a silent regression).
+
+Investigating this crash also surfaced two independent, pre-existing bugs in
+the same retry loop, both now fixed:
+
+- `NoSolutionError.constraint` defaults to `None`, and DNAChisel's own
+  `perform_final_constraints_check()` (run at the end of
+  `resolve_constraints()`) raises it this way - without setting
+  `.constraint` - when constraints that each individually resolved during
+  the per-constraint pass end up regressing each other by the time solving
+  reaches the last one. This is a real, deterministic scenario (confirmed
+  via 5 repeated attempts all failing identically, not flaky), not a
+  hypothetical - the retry loop's `cnst.remove(e.constraint)` crashed with
+  `ValueError: list.remove(x): x not in list` whenever this happened.
+- The fix for that (re-evaluating every constraint directly) crashed
+  differently: `AttributeError: 'NoneType' object has no attribute 'start'`,
+  because specs like `EnforceGCContent` have `location=None` until
+  `.initialized_on_problem(problem)` is called (which returns a *copy*, not
+  an in-place mutation) - evaluating the raw, never-initialized constraint
+  crashes the same way DNAChisel's own machinery would. Fixed by evaluating
+  `c.initialized_on_problem(problem, role='constraint')` instead of `c`
+  directly.
+
+Residual limitation, left as future work rather than chased further here: a
+homopolymer (or other short-pattern repeat) landing entirely on
+highly-constrained codons (worst case: Met/`ATG` or Trp/`TGG`, which have
+only one codon each, no synonymous alternative at all) will have every one
+of its per-position disruption constraints dropped as unsatisfiable, and
+currently there's no visible signal to the user that this happened beyond
+`num_edits` coming back lower than the number of detected slippage sites
+would suggest. If this turns out to matter in practice, the fix would be to
+surface which specific sites got dropped (e.g. in `final_sequence.txt` or a
+returned list) rather than staying silent about it.

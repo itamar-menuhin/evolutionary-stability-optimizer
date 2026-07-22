@@ -15,6 +15,31 @@ from eso.constraints import (
 from eso.custom_score import CustomScore
 from eso.detection.slippage import modify_df_slippage
 
+# Substring DNAChisel raises when an AvoidPattern's location doesn't align to
+# the codon grid under EnforceTranslation: DnaOptimizationProblem.resolve_constraint
+# can compute a "jointly mutable" mutation-space region (accounting for codon
+# interdependencies) that ends up not overlapping the constraint's own declared
+# location at all. AvoidPattern.localized() correctly returns None for that
+# (they genuinely don't overlap) - but the DNAChisel caller doesn't check for
+# None before calling .evaluate() on it. Confirmed via direct reproduction with
+# a non-codon-aligned 2nt repeat and, separately, a 1nt homopolymer run; a
+# codon-aligned repeat (e.g. a 3nt unit) never triggers it.
+#
+# An earlier fix widened every avoid-window outward to whole codons before
+# building the AvoidPattern, which does dodge this crash - but it also changes
+# what's being asked for: "avoid this pattern at this spot" becomes "avoid this
+# pattern ANYWHERE in the whole codon", which for a single-nucleotide pattern
+# in a homopolymer run can make the constraint unsatisfiable for every codon in
+# the run (e.g. all-Phe TTT/TTC codons always contain a T), silently dropping
+# every constraint and leaving the site untouched - no crash, but no effect
+# either (confirmed directly: a "ATG"+"T"*12+"TAA" homopolymer produced
+# num_edits=0 with that approach). So instead of forcing this by widening the
+# window, the retry loop below simply catches the crash like any other
+# unsatisfiable-constraint case and drops whichever constraints are actually
+# still failing, exactly as it already did for DNAChisel's own
+# NoSolutionError-with-no-named-constraint case.
+_LOCALIZED_NONE_CRASH_MESSAGE = "'NoneType' object has no attribute 'evaluate'"
+
 
 def _codon_optimization_objectives(organism_name, orf_regions, method):
     """Build DNAChisel CodonOptimize objectives.
@@ -155,13 +180,50 @@ def optimization_engine(
 
     problem = None
     flag = 0
-    while flag < 60:  # retry, dropping unsatisfiable constraints, up to 60 times
+    while flag < 60:  # retry, dropping unsatisfiable/crashing constraints, up to 60 times
         problem = dnachisel.DnaOptimizationProblem(sequence=str(seq), constraints=cnst, objectives=obj)
         try:
             problem.resolve_constraints()
             break
         except NoSolutionError as e:
-            cnst.remove(e.constraint)
+            if e.constraint is not None:
+                cnst.remove(e.constraint)
+                flag += 1
+                continue
+            drop_and_retry = True
+        except AttributeError as e:
+            # See _LOCALIZED_NONE_CRASH_MESSAGE above: a genuine DNAChisel-internal
+            # crash on non-codon-aligned AvoidPattern locations. Only swallow this
+            # exact crash - anything else with this type is a real bug, re-raise it.
+            if _LOCALIZED_NONE_CRASH_MESSAGE not in str(e):
+                raise
+            drop_and_retry = True
+
+        if drop_and_retry:
+            # Either DNAChisel's own final consistency check
+            # (perform_final_constraints_check, run at the end of
+            # resolve_constraints) failed without identifying a single culprit
+            # constraint - NoSolutionError.constraint defaults to None, seen in
+            # practice with several individually-resolvable but densely packed
+            # AvoidPattern constraints that regress each other by the time
+            # solving reaches the last one - or resolve_constraint itself
+            # crashed on a non-codon-aligned AvoidPattern location. Either way,
+            # `cnst.remove(None)` isn't possible here, so instead re-evaluate
+            # every constraint ourselves and drop whichever ones are still
+            # actually failing, so the retry loop can keep making progress the
+            # same way it does for the normal case. Constraints like
+            # EnforceGCContent have location=None until
+            # initialized_on_problem() fills it in (as a copy, not in-place) -
+            # evaluate that initialized copy, not the raw constraint, which
+            # would crash the same way on its own unset location.
+            failing = [
+                c for c in cnst
+                if not c.initialized_on_problem(problem, role='constraint').evaluate(problem).passes
+            ]
+            if not failing:
+                raise
+            for constraint in failing:
+                cnst.remove(constraint)
             flag += 1
     else:
         raise NoSolutionError(f"More than 60 hard constraints were not satisfied ({flag}).", problem=problem)

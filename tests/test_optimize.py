@@ -124,3 +124,64 @@ def test_motif_avoidance_respects_exclusion_regions():
         seq, df_motifs=df_motifs, exclusion_regions=[(start, start + 4)])
 
     assert final_seq[start:start + 4] == "GATC"
+
+
+def test_non_codon_aligned_slippage_site_no_longer_crashes_dnachisel():
+    # regression test for a real DNAChisel-internal crash: an AvoidPattern
+    # window that doesn't align to the codon grid under EnforceTranslation
+    # (e.g. a 2nt "GC" repeat starting mid-codon) could make
+    # DnaOptimizationProblem.resolve_constraint compute a mutation-space
+    # "choices span" that doesn't overlap the constraint's own location at
+    # all - AvoidPattern.localized() correctly returns None for that, but
+    # DNAChisel's caller doesn't check before calling .evaluate() on it,
+    # crashing with "AttributeError: 'NoneType' object has no attribute
+    # 'evaluate'". Confirmed this reproduces with codon-unaligned length-1
+    # (homopolymer) and length-2 repeats alike, but NOT with a codon-aligned
+    # length-3 repeat (see test_slippage_avoidance_disrupts_the_repeat, which
+    # never crashed).
+    #
+    # Fixed not by widening the avoid-window (an earlier attempt at that
+    # broadened "avoid this pattern at this spot" into "avoid this pattern
+    # ANYWHERE in the whole codon", which for a single-nucleotide pattern in a
+    # homopolymer run can be unsatisfiable for every codon in the run and
+    # silently drop every constraint with no effect - see
+    # test_non_codon_aligned_homopolymer_falls_back_to_dropping_the_site
+    # below), but by catching this exact crash in optimize.py's retry loop
+    # and treating it like any other unsatisfiable constraint: re-evaluate
+    # everything and drop whichever constraints are still actually failing.
+    seq = "ATG" + "GC" * 10 + "TAA"  # "GC" windows start at position 3, mid-codon
+    df_slippage = pd.DataFrame([
+        {"start": s, "end": s + 2, "length_base_unit": 2, "sequence": "GC",
+         "num_base_units": 2, "log10_prob_slippage_ecoli": -1.0}
+        for s in range(3, 23, 4)
+    ])
+
+    final_seq, _, num_edits = optimization_engine(
+        seq, df_slippage=df_slippage, organism_name="kompas")
+
+    assert len(final_seq) == len(seq)
+    assert final_seq[:3] == "ATG" and final_seq[-3:] in ("TAA", "TAG", "TGA")
+    assert num_edits > 0
+
+
+def test_non_codon_aligned_homopolymer_falls_back_to_dropping_the_site():
+    # same crash as above, but for a 1nt homopolymer run of "T" landing on
+    # all-Phe codons (TTT/TTC, both of which always contain a T). There is no
+    # way to satisfy "avoid a T here" while preserving translation over every
+    # position of a pure poly-T run under this codon usage table, so - unlike
+    # the "GC" case above, where other synonymous codons exist - every one of
+    # these per-position constraints is expected to end up dropped rather
+    # than resolved. The key regression this guards against is the crash
+    # itself (and cnst.remove(None) on DNAChisel's own final-check error) -
+    # not that every site gets fixed.
+    seq = "ATG" + "T" * 12 + "TAA"
+    df_slippage = pd.DataFrame([{
+        "start": 3, "end": 15, "length_base_unit": 1, "sequence": "T" * 12,
+        "num_base_units": 12, "log10_prob_slippage_ecoli": -1.0,
+    }])
+
+    final_seq, _, _ = optimization_engine(
+        seq, df_slippage=df_slippage, organism_name="kompas")
+
+    assert len(final_seq) == len(seq)
+    assert final_seq[:3] == "ATG" and final_seq[-3:] in ("TAA", "TAG", "TGA")
