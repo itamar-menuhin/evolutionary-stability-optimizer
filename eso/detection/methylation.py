@@ -19,7 +19,7 @@ SITE_COLUMNS = [
 
 def load_motifs(motifs_path):
     """Load PSSM motifs from a MEME-minimal-format file (e.g. topEnriched.*.meme.txt)."""
-    with open(motifs_path, "r") as handle:
+    with open(motifs_path, "r", encoding="utf-8") as handle:
         return list(motifs.parse(handle, "minimal"))
 
 

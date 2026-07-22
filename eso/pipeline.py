@@ -135,7 +135,7 @@ def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
                 custom_score_minimize=custom_score_minimize,
                 orf_regions=orf_regions, exclusion_regions=exclusion_regions)
 
-            with open(path.join(curr_output_path, 'final_sequence.txt'), "w") as text_file:
+            with open(path.join(curr_output_path, 'final_sequence.txt'), "w", encoding="utf-8") as text_file:
                 if custom_score_fn is None and maximal_cai is not None:
                     cai_constrained = _extract_cai(obj_description, num_codons)
                     text_file.write('The maximal CAI of gene (with no constraints) objective:\n')

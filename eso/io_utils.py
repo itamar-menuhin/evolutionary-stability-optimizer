@@ -3,7 +3,6 @@
 import gzip
 import json
 import os
-from glob import glob
 from os import path
 from pathlib import Path
 
@@ -67,7 +66,7 @@ def load_indexes_from_file(file_path):
         raise IndexesFileError(
             f"Can't find the indexes file '{file_path}'. Check the path is correct.")
 
-    with open(file_path, "r") as handle:
+    with open(file_path, "r", encoding="utf-8") as handle:
         try:
             entries = json.load(handle)
         except json.JSONDecodeError as e:
@@ -100,10 +99,34 @@ def file_opener(file):
     """`file` is a (filepath, filetype) tuple, filetype in {'fasta', 'genbank'}."""
     filepath, filetype = file
     if filepath.endswith('.gz'):
-        with gzip.open(filepath, "rt") as handle:
+        with gzip.open(filepath, "rt", encoding="utf-8") as handle:
             return list(SeqIO.parse(handle, filetype))
-    with open(filepath, "rt") as handle:
+    with open(filepath, "rt", encoding="utf-8") as handle:
         return list(SeqIO.parse(handle, filetype))
+
+
+def _matching_filetype(filename):
+    """Return the FILE_ENDINGS key `filename` belongs to (case-insensitively,
+    ignoring a trailing .gz), or None if it doesn't match any known extension.
+
+    Matching case-insensitively (rather than relying on glob('*.fasta')) matters
+    because glob's case sensitivity is filesystem-dependent - Windows filesystems
+    are case-insensitive so `*.fasta` there also matches `GENE.FASTA`, but the
+    same glob call on a (case-sensitive) Mac/Linux filesystem would silently skip
+    it. Confirmed this is a real, reachable discrepancy, not hypothetical -
+    without this, a file discovery result depends on which OS the tool happens
+    to run on for the exact same input folder.
+    """
+    name = filename.lower()
+    if name.endswith('.gz'):
+        name = name[:-3]
+    if '.' not in name:
+        return None
+    ext = name.rsplit('.', 1)[-1]
+    for filetype, endings in FILE_ENDINGS.items():
+        if ext in endings:
+            return filetype
+    return None
 
 
 def relevant_file_paths(input_folder=None):
@@ -114,17 +137,16 @@ def relevant_file_paths(input_folder=None):
         input_folder = os.getcwd()
     input_as_path = Path(input_folder)
 
+    candidates = [p for p in input_as_path.glob('*') if p.is_file()]
+    for entry in input_as_path.glob('*'):
+        if entry.is_dir():
+            candidates.extend(p for p in entry.glob('*') if p.is_file())
+
     files = []
-    for filetype, endings in FILE_ENDINGS.items():
-        for ending in endings:
-            for gzipping in ['', '.gz']:
-                pattern = ending + gzipping
-                files.extend(
-                    (filepath, filetype) for filepath in glob(path.join(input_as_path, '*', f'*.{pattern}'))
-                )
-                files.extend(
-                    (filepath, filetype) for filepath in glob(path.join(input_as_path, f'*.{pattern}'))
-                )
+    for candidate in candidates:
+        filetype = _matching_filetype(candidate.name)
+        if filetype is not None:
+            files.append((str(candidate), filetype))
     return files
 
 

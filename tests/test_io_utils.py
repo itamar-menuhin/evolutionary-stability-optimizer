@@ -116,6 +116,26 @@ def test_empty_folder_returns_no_files(tmp_path):
     assert relevant_file_paths(str(tmp_path)) == []
 
 
+def test_finds_uppercase_and_mixed_case_extensions(tmp_path):
+    # regression test: glob('*.fasta') is case-insensitive on Windows (NTFS)
+    # but case-SENSITIVE on Mac/Linux - relying on glob's own case behavior
+    # meant a file named GENE.FASTA was found on Windows but silently
+    # skipped (no error, no warning) on Mac/Linux. Must match identically
+    # regardless of platform.
+    (tmp_path / 'GENE.FASTA').write_text('>g\nACGT\n')
+    (tmp_path / 'Mixed.Fa').write_text('>g\nACGT\n')
+    sub = tmp_path / 'sub'
+    sub.mkdir()
+    (sub / 'NESTED.GBK').write_text('')
+
+    files = relevant_file_paths(str(tmp_path))
+    found = {(os.path.basename(f), t) for f, t in files}
+
+    assert ('GENE.FASTA', 'fasta') in found
+    assert ('Mixed.Fa', 'fasta') in found
+    assert ('NESTED.GBK', 'genbank') in found
+
+
 # --- file_opener -----------------------------------------------------------
 
 def test_opens_plain_fasta_file(tmp_path):

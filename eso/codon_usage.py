@@ -65,7 +65,7 @@ def cub_kompas():
 
 
 def _load_bundled_csv_cub(data_filename):
-    with resources.files("eso.data").joinpath(data_filename).open("r") as handle:
+    with resources.files("eso.data").joinpath(data_filename).open("r", encoding="utf-8") as handle:
         df = pd.read_csv(handle)
 
     codon_usage_table = df.groupby('aa').apply(
