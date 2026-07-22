@@ -193,6 +193,56 @@ For each FASTA/GenBank file found in `input_folder`, this writes to `output_path
 See [`examples/antibody_optimization`](examples/antibody_optimization) for a complete
 worked example (human antibody heavy/light chain optimization).
 
+## Using ESO as a library, instead of files
+
+`main()` (above) is file-in, file-out - convenient for a one-off CLI run, but if you
+already have sequences in memory as part of your own code (e.g. generated, fetched from a
+database, or produced by an earlier step in your own pipeline), you don't need to write
+them to disk first. `eso.optimize.optimization_engine` (also importable as
+`eso.optimization_engine`) takes a plain DNA string and returns a plain DNA string - no
+files involved:
+
+```python
+from eso import optimization_engine, suspect_site_extractor
+
+seq = "ATG" + "GCT" * 15 + "TAA"  # any DNA string you already have
+
+# 1. detect hotspots (skip this step and the dataframes below entirely if you only
+#    want codon/GC optimization, with no hotspot avoidance)
+sites = suspect_site_extractor(seq, compute_motifs=False, num_sites=50)
+
+# 2. optimize, avoiding what was detected
+final_seq, objectives_summary, num_edits = optimization_engine(
+    seq,
+    organism_name="e_coli",
+    df_recombination=sites["df_recombination"],
+    df_slippage=sites["df_slippage"],
+)
+```
+
+`final_seq` is a plain `str` you can feed straight back into whatever your own code does
+next (write it out yourself, pass it to another function, etc.) - nothing here touches
+the filesystem. `suspect_site_extractor` (also importable as
+`eso.suspect_site_extractor`) is the same detection step `main()` runs internally; call
+it on its own if you only want the hotspot dataframes, with no optimization at all.
+
+This composes directly with a custom scoring function (see the next section) - just pass
+`custom_score_fn=...` to `optimization_engine` instead of `organism_name`:
+
+```python
+final_seq, _, num_edits = optimization_engine(
+    seq,
+    custom_score_fn=lambda s: s.count("G") + s.count("C"),  # any function seq -> number
+    custom_score_window=3,
+    df_recombination=sites["df_recombination"],
+    df_slippage=sites["df_slippage"],
+)
+```
+
+See `optimization_engine`'s docstring (`eso/optimize.py`) for every parameter
+(`mini_gc`/`maxi_gc`, `orf_regions`/`exclusion_regions`, `method`, and so on) - everything
+available via `main()`/the CLI is available here too, just without the file layer.
+
 ## Scoring sequences your own way, instead of CAI/tAI
 
 By default, optimization scores codon choices against a codon-usage table (CAI/tAI-style,
