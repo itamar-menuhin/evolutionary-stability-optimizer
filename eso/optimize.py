@@ -12,6 +12,7 @@ from eso.constraints import (
     exclusion_site_correcter,
     recombination_to_multiple_avoidance_sites,
 )
+from eso.custom_score import CustomScore
 from eso.detection.slippage import modify_df_slippage
 
 
@@ -43,6 +44,9 @@ def optimization_engine(
     window_size_gc=50,
     method='use_best_codon',
     organism_name='not_specified',
+    custom_score_fn=None,
+    custom_score_window=None,
+    custom_score_minimize=False,
     df_recombination=None,
     df_slippage=None,
     df_motifs=None,
@@ -69,6 +73,22 @@ def optimization_engine(
         Host organism for codon optimization: one of
         eso.codon_usage.CODON_USAGE_TABLES' keys, a python-codon-tables
         species name/TaxID, or "not_specified" to skip codon optimization.
+    custom_score_fn: callable(str) -> float, or None
+        If given, replaces the CodonOptimize (CAI/tAI-style) objective with
+        eso.custom_score.CustomScore wrapping this function (higher is
+        better sequence, unless custom_score_minimize=True). `organism_name`
+        and `method` are then ignored. See eso.custom_score.CustomScore for
+        the windowed-vs-global tradeoff.
+    custom_score_window: int or None
+        If given, custom_score_fn is called on each successive
+        `custom_score_window`-nt chunk and the results summed (fast, but
+        only correct if the score truly decomposes that way). If None
+        (default), custom_score_fn is called once on the whole sequence on
+        every trial mutation during optimization (always correct, but can be
+        very slow on long sequences - a warning is raised when this mode is
+        used).
+    custom_score_minimize: bool
+        If True, treats a lower custom_score_fn value as better.
     df_recombination, df_slippage, df_motifs: pandas.DataFrame or None
         Detected hotspots to avoid (from eso.detection.*); pass None or an
         empty dataframe to skip a given constraint type.
@@ -93,7 +113,10 @@ def optimization_engine(
         new_last_index = ((len(seq) - 1) // 3) * 3
         orf_regions = [(0, new_last_index)]
 
-    obj = _codon_optimization_objectives(organism_name, orf_regions, method)
+    if custom_score_fn is not None:
+        obj = [CustomScore(custom_score_fn, window=custom_score_window, minimize=custom_score_minimize)]
+    else:
+        obj = _codon_optimization_objectives(organism_name, orf_regions, method)
 
     cnst = [dnachisel.EnforceGCContent(mini=mini_gc, maxi=maxi_gc, window=window_size_gc)]
     for orf in orf_regions:
@@ -115,7 +138,18 @@ def optimization_engine(
         df_mot = df_motifs.copy()[['start_index', 'end_index', 'actual_site']].rename(
             columns={'start_index': 'start', 'end_index': 'end', 'actual_site': 'sequence'})
         df_mot.loc[:, 'start'] = df_mot['start'].astype(int)
-        df_mot.loc[:, 'end'] = df_mot['end'].astype(int)
+        # eso.detection.methylation's end_index is INCLUSIVE (the index of the
+        # motif's last nucleotide), but everything downstream of here -
+        # exclusion_site_correcter, convert_df_to_constraints, and DNAChisel's
+        # own Location - uses EXCLUSIVE end (matching Python slicing). Without
+        # the +1, every motif's AvoidPattern location was exactly one
+        # nucleotide too short to ever contain its own pattern, so
+        # DNAChisel could never find it there and always reported the
+        # constraint as trivially satisfied - methylation-motif avoidance
+        # silently did nothing. Confirmed directly: before this fix, a GATC
+        # motif passed as df_motifs survived optimization completely
+        # untouched (0 edits); see tests/test_optimize.py.
+        df_mot.loc[:, 'end'] = df_mot['end'].astype(int) + 1
         df_mot = exclusion_site_correcter(df_mot, exclusion_regions)
         cnst.extend(convert_df_to_constraints(df_mot))
 

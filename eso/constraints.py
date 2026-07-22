@@ -11,9 +11,19 @@ from eso.detection.recombination import _generate_neighbors
 
 
 def has_overlap_exclusion(start, end, exclusions):
-    """True if the (start, end) region overlaps any exclusion region."""
+    """True if the (start, end) region overlaps any exclusion region.
+
+    (start, end) is exclusive-end throughout this codebase (matches Python
+    slicing, eso.sequence_utils.parse_region's output, and
+    eso.detection.recombination's output after _elongate_sites) - a region
+    ending exactly where another begins shares no actual nucleotide with it,
+    so `<=`/`>=` (not `<`/`>`) is required here to avoid treating merely
+    touching regions as overlapping (the same bug class fixed in
+    eso.detection._overlap.ranges_overlap, found independently in this
+    separate module).
+    """
     for ex in exclusions:
-        if end < ex[0] or start > ex[1]:
+        if end <= ex[0] or start >= ex[1]:
             continue
         return True
     return False
@@ -78,17 +88,28 @@ def recombination_to_multiple_avoidance_sites(df, exclusion_regions):
 
 
 def exclusion_site_correcter(df, exclusion_regions):
-    """Trim detected sites so they don't overlap any exclusion (locked) region."""
+    """Trim detected sites so they don't overlap any exclusion (locked) region.
+
+    (start, end) is exclusive-end (see has_overlap_exclusion) - a region's
+    exclusive end is itself the first *excluded* position, so trimming a site
+    to stop before an exclusion should set end = region[0] (not
+    region[0] - 1), and trimming to start after one should set
+    start = region[1] (not region[1] + 1). The old `-1`/`+1` didn't corrupt
+    the `sequence` field (it always matched the true substring at the
+    resulting start/end - just a shorter one than necessary), but it did
+    needlessly discard one usable, still-modifiable nucleotide per exclusion
+    boundary.
+    """
     if exclusion_regions == 'error':
         return df
 
     for region in exclusion_regions:
         df_before = df[df.start < region[0]]
-        df_before.loc[:, 'end'] = df_before.end.apply(lambda x: int(min(x, region[0] - 1)))
+        df_before.loc[:, 'end'] = df_before.end.apply(lambda x: int(min(x, region[0])))
         df_before.loc[:, 'sequence'] = df_before.apply(lambda row: row.sequence[:(row.end - row.start)], axis=1)
 
         df_after = df[df.end > region[1]]
-        df_after.loc[:, 'start'] = df_after.start.apply(lambda x: int(max(x, region[1] + 1)))
+        df_after.loc[:, 'start'] = df_after.start.apply(lambda x: int(max(x, region[1])))
         df_after.loc[:, 'sequence'] = df_after.apply(lambda row: row.sequence[-(row.end - row.start):], axis=1)
 
         df = pd.concat([df_before, df_after], ignore_index=True)

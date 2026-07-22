@@ -26,7 +26,7 @@ def create_word_document_with_highlighted_differences(sequences_data, output_pat
     doc = Document()
     doc.add_heading('Sequence Optimization Results', 0)
 
-    for seq_name, original_seq, final_seq in sequences_data:
+    for index, (seq_name, original_seq, final_seq) in enumerate(sequences_data):
         doc.add_heading(f'Sequence: {seq_name}', level=1)
 
         doc.add_heading('Original Sequence:', level=2)
@@ -45,7 +45,11 @@ def create_word_document_with_highlighted_differences(sequences_data, output_pat
             if i < len(original_seq) and char != original_seq[i]:
                 run.font.highlight_color = WD_COLOR_INDEX.YELLOW
 
-        if seq_name != sequences_data[-1][0]:
+        # was `if seq_name != sequences_data[-1][0]` - compared by name, so a
+        # sequence whose name happened to match the true last entry's name
+        # (e.g. two files/records that coincidentally share a stem) would
+        # wrongly skip its own page break. Compare by position instead.
+        if index != len(sequences_data) - 1:
             doc.add_page_break()
 
     doc_path = path.join(output_path, 'sequence_comparison.docx')

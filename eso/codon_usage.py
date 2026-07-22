@@ -58,7 +58,10 @@ def cub_kompas():
         'Val': {'GTA': 0.178012, 'GTC': 0.217067, 'GTG': 0.216627, 'GTT': 0.388294},
         'END': {'TAA': 0.399841, 'TAG': 0.339428, 'TGA': 0.260731},
     }
-    return {SeqUtils.seq1(x): cub_full[x] for x in cub_full}
+    # SeqUtils.seq1('END') returns 'X' (undefined amino acid), not '*' (stop) -
+    # without this special case, the stop-codon frequencies silently ended up
+    # filed under the wrong key and were never used for stop-codon scoring.
+    return {('*' if x == 'END' else SeqUtils.seq1(x)): cub_full[x] for x in cub_full}
 
 
 def _load_bundled_csv_cub(data_filename):

@@ -141,7 +141,12 @@ def test_input(mini_gc, maxi_gc, indexes, files):
                 region_indexes = parse_region(index_value[1])
                 if region_indexes == 'error':
                     return 'Exclusion regions must be formatted as "start_1-end_1,start_2-end_2,...", for example "1-8, 50-103"'
-                for curr_ind in orf_indexes:
+                # was `for curr_ind in orf_indexes` - validated the already-checked
+                # ORF indexes a second time and never actually checked the
+                # exclusion regions themselves, so a malformed exclusion region
+                # (e.g. start >= end) slipped through validation entirely and
+                # only surfaced later as a confusing, unrelated GC-limit error.
+                for curr_ind in region_indexes:
                     if curr_ind[0] < 0:
                         return 'Start index must be greater than 0, also for exclusion sites!!'
                     if curr_ind[0] >= curr_ind[1]:
