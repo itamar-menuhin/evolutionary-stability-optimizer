@@ -1116,3 +1116,28 @@ README section. Verified with unit tests for the loader itself (missing
 file, invalid JSON, wrong top-level type, missing required keys) and an
 end-to-end CLI test confirming a declared exclusion region genuinely
 survives optimization untouched when set via `--indexes-file`.
+
+## Packaging - `python-Levenshtein`'s version constraint silently blocked a fresh install
+
+Found while verifying the repo is actually installable by someone new,
+ahead of handing it off. `pyproject.toml` declared
+`python-Levenshtein = "^0.25.0"` - but Poetry's caret operator treats
+pre-1.0 versions specially: for a `0.x.y` version, `^0.25.0` means
+`>=0.25.0,<0.26.0`, not "any 0.25+ release" the way it would for a `^1.x.y`
+constraint. Confirmed directly: a genuinely fresh `pip install
+<this-repo>` in a brand-new virtualenv resolved `python-Levenshtein` to
+`0.25.1` (the newest version inside that narrow range), which requires
+`Levenshtein==0.25.1` exactly - and that release predates Python 3.13
+(released after it), so no prebuilt wheel exists for it on this platform.
+pip fell back to building from source, which failed outright without
+Visual Studio installed, with a fairly opaque `CMake`/`scikit-build` error
+that gives no hint the actual problem is a version-constraint syntax issue
+three layers up. Fixed by widening the constraint to
+`>=0.26.0,<1.0.0` (0.26.0 is the first version with prebuilt wheels
+covering current Python versions). Re-verified end-to-end from a clean
+virtualenv after the fix: `pip install <repo>` succeeds with no compiler
+needed, `eso-optimize --help` and a real optimization run both work, the
+bundled antibody example (`examples/antibody_optimization/run_example.py`)
+runs successfully, and the full test suite passes (158 passed, 1 skipped -
+the skip is the optional `docx-report` test, expected since `python-docx`
+isn't installed by the base install).
