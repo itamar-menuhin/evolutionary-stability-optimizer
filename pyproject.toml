@@ -19,7 +19,7 @@ python-Levenshtein = ">=0.26.0,<1.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"
-python-docx = "^1.1.0"
+python-docx = "^1.2.0"
 
 [tool.poetry.extras]
 docx-report = ["python-docx"]
