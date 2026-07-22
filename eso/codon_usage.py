@@ -69,7 +69,7 @@ def _load_bundled_csv_cub(data_filename):
         df = pd.read_csv(handle)
 
     codon_usage_table = df.groupby('aa').apply(
-        lambda x: x.set_index('codon')['freq_within_aa'].to_dict()
+        lambda x: x.set_index('codon')['freq_within_aa'].to_dict(), include_groups=False
     ).to_dict()
 
     if '*' not in codon_usage_table:

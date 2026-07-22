@@ -1,6 +1,7 @@
 """FASTA/GenBank file discovery and input validation."""
 
 import gzip
+import json
 import os
 from glob import glob
 from os import path
@@ -30,6 +31,69 @@ def file_stem(filepath):
     if name.endswith('.gz'):
         name = name[:-3]
     return path.splitext(name)[0]
+
+
+class IndexesFileError(Exception):
+    """An --indexes-file failed to load or was malformed.
+
+    Raised with a plain-English message aimed at someone filling in ORF and
+    exclusion regions for their sequences, not a Python or JSON expert - the
+    message alone should be enough to fix the problem.
+    """
+
+
+def load_indexes_from_file(file_path):
+    """Load the `indexes` argument to eso.pipeline.main from a JSON file, for
+    use as the CLI's `--indexes-file`.
+
+    The file must be a JSON list of objects, each with:
+    - "file": the FASTA/GenBank file's stem (no extension - matches
+      eso.io_utils.file_stem), e.g. "my_gene" for "my_gene.fasta".
+    - "seq_index": which record within that file, as a string, 0-indexed in
+      file order, e.g. "0" for the first sequence.
+    - "orf_regions": 1-indexed, inclusive region string, e.g. "1-6, 51-68".
+    - "exclusion_regions": same format; omit or use "" for no exclusions.
+
+    Region strings themselves are validated later, the same way as when
+    `indexes` is passed directly to eso.pipeline.main - this only checks the
+    file's own structure (valid JSON, a list, well-formed entries).
+
+    Returns
+    -------
+    dict mapping (file_stem, seq_index) -> (orf_regions, exclusion_regions),
+    matching eso.pipeline.main's `indexes` parameter.
+    """
+    if not path.isfile(file_path):
+        raise IndexesFileError(
+            f"Can't find the indexes file '{file_path}'. Check the path is correct.")
+
+    with open(file_path, "r") as handle:
+        try:
+            entries = json.load(handle)
+        except json.JSONDecodeError as e:
+            raise IndexesFileError(
+                f"'{file_path}' isn't valid JSON: {e}. Check for missing commas, quotes, or brackets."
+            ) from e
+
+    if not isinstance(entries, list):
+        raise IndexesFileError(
+            f"'{file_path}' must contain a JSON list of entries (got a {type(entries).__name__} instead). "
+            'Each entry looks like {"file": "my_gene", "seq_index": "0", "orf_regions": "1-6, 51-68", '
+            '"exclusion_regions": "1-6, 50-68"}.')
+
+    indexes = {}
+    for ii, entry in enumerate(entries):
+        if not isinstance(entry, dict) or 'file' not in entry or 'seq_index' not in entry:
+            raise IndexesFileError(
+                f"Entry {ii} of '{file_path}' must be an object with at least \"file\" and "
+                f'"seq_index" keys - got {entry!r}.')
+
+        key = (str(entry['file']), str(entry['seq_index']))
+        orf_regions = str(entry.get('orf_regions', ''))
+        exclusion_regions = str(entry.get('exclusion_regions', ''))
+        indexes[key] = (orf_regions, exclusion_regions)
+
+    return indexes
 
 
 def file_opener(file):
@@ -103,7 +167,13 @@ def exclusion_gc_tester(file, indexes):
                     overlap_reg = biotools.windows_overlap(curr_region, ex_reg)
                     if overlap_reg is not None:
                         overlap += example_seq[overlap_reg[0]:overlap_reg[1]]
-                curr_gc = biotools.gc_content(overlap)
+                # biotools.gc_content('') is 0/0 (NaN, with a RuntimeWarning) -
+                # `overlap` is empty whenever none of exclusion_regions actually
+                # overlaps this particular sliding window, which does happen (e.g.
+                # a window entirely before the region under test). The GC content
+                # of an empty overlap contributes nothing regardless, so skip the
+                # call rather than asking for a GC content that doesn't exist.
+                curr_gc = biotools.gc_content(overlap) if overlap else 0.0
                 curr_max_gc = max(curr_max_gc, curr_gc * len(overlap) / 50.0)
                 curr_min_gc = min(curr_min_gc, curr_gc * len(overlap) / 50.0 + (1.0 - len(overlap) / 50.0))
 
@@ -116,7 +186,7 @@ def exclusion_gc_tester(file, indexes):
                     overlap_reg = biotools.windows_overlap(curr_region, ex_reg)
                     if overlap_reg is not None:
                         overlap += example_seq[overlap_reg[0]:overlap_reg[1]]
-                curr_gc = biotools.gc_content(overlap)
+                curr_gc = biotools.gc_content(overlap) if overlap else 0.0
                 curr_max_gc = max(curr_max_gc, curr_gc * len(overlap) / 50.0)
                 curr_min_gc = min(curr_min_gc, curr_gc * len(overlap) / 50.0 + (1.0 - len(overlap) / 50.0))
 
