@@ -10,7 +10,7 @@ include = ["eso/data/*.csv"]
 
 [tool.poetry.dependencies]
 python = "^3.11"
-biopython = "^1.83"
+biopython = "^1.87"
 numpy = ">=1.26,<3.0"
 pandas = "^3.0.3"
 scikit-learn = "^1.9.0.0"
