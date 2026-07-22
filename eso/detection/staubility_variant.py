@@ -93,7 +93,7 @@ def find_recombination_sites(seq, num_sites=np.inf):
     df_recombination = df_recombination.sort_values('log10_prob_recombination_ecoli', ascending=False)
 
     if num_sites < np.inf:
-        df_recombination = df_recombination.head(num_sites)
+        df_recombination = df_recombination.head(int(num_sites))
 
     for col in df_recombination:
         if df_recombination[col].isnull().all():
@@ -194,7 +194,7 @@ def find_slippage_sites(seq, num_sites=np.inf):
     df_slippage = df_slippage.sort_values(['log10_prob_slippage_ecoli', 'length_base_unit'], ascending=[False, False])
 
     if num_sites < np.inf:
-        df_slippage = df_slippage.head(num_sites)
+        df_slippage = df_slippage.head(int(num_sites))
 
     return df_slippage
 

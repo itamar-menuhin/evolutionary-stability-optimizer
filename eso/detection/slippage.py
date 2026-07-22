@@ -158,7 +158,7 @@ def find_slippage_sites(seq, num_sites=np.inf):
     df_slippage = df_slippage.sort_values(['log10_prob_slippage_ecoli', 'length_base_unit'], ascending=[False, False])
 
     if num_sites < np.inf:
-        df_slippage = df_slippage.head(num_sites)
+        df_slippage = df_slippage.head(int(num_sites))
 
     return df_slippage
 

@@ -229,7 +229,7 @@ def find_recombination_sites(seq, num_sites=np.inf):
     df_pairs = df_pairs.sort_values('log10_prob_recombination_ecoli', ascending=False)
 
     if num_sites < np.inf:
-        df_pairs = df_pairs.head(num_sites)
+        df_pairs = df_pairs.head(int(num_sites))
 
     for col in ['start_1', 'end_1', 'start_2', 'end_2', 'location_delta', 'site_length']:
         df_pairs.loc[:, col] = df_pairs[col].astype(int)

@@ -1030,3 +1030,31 @@ currently there's no visible signal to the user that this happened beyond
 would suggest. If this turns out to matter in practice, the fix would be to
 surface which specific sites got dropped (e.g. in `final_sequence.txt` or a
 returned list) rather than staying silent about it.
+
+## eso.cli - `--num-sites` crashed whenever it actually limited anything
+
+Last of the previously-untested modules. `--num-sites` is parsed via
+argparse as `type=float` (its default, `np.inf`, isn't representable as an
+`int`), and reaches `eso.detection.recombination.find_recombination_sites`
+/ `eso.detection.slippage.find_slippage_sites` unchanged. Both called
+`df.head(num_sites)` directly whenever a finite limit was given - but
+`pandas.DataFrame.head()` rejects a float positional count outright
+(`TypeError: cannot do positional indexing ... of type float`). The
+`staubility_variant` "fast"-mode siblings of both had the identical bug.
+`eso.detection.methylation.find_motif_sites` already guarded this correctly
+with `order[:int(num_sites)]` - the inconsistency across otherwise-parallel
+functions is what made this worth checking directly rather than assuming
+it worked. Confirmed the crash directly (a real `--num-sites 5`-style call,
+not a mock) before fixing; fixed by adding the same `int(num_sites)` cast at
+all four remaining call sites. The reason this was never caught before: the
+one existing end-to-end test (`tests/test_pipeline_integration.py`) calls
+`eso.pipeline.main()` directly with an already-int `num_sites=50`, bypassing
+argparse's float conversion entirely.
+
+Also added `tests/test_cli.py` (10 tests - `--num-sites` end-to-end via the
+real detection pipeline, plus `--no-optimize`, `--mini-gc`/`--maxi-gc`,
+`--recombination-mode`/`--slippage-mode`, `--organism-name`/`--method`, and
+argparse's own choice validation), on top of the pre-existing
+`tests/test_cli_custom_score.py`. No further issues found in `cli.py`
+itself - it's a thin, mostly-mechanical argparse-to-`pipeline.main()`
+wrapper.
