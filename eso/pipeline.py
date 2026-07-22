@@ -12,7 +12,7 @@ import pandas as pd
 from eso.detection.common_motifs import load_common_motifs
 from eso.detection.dispatch import find_recombination_sites, find_slippage_sites
 from eso.detection.methylation import load_motifs, find_motif_sites
-from eso.io_utils import file_opener, relevant_file_paths, test_input
+from eso.io_utils import file_opener, file_stem, relevant_file_paths, test_input
 from eso.optimize import optimization_engine
 from eso.report import create_word_document_with_highlighted_differences
 from eso.sequence_utils import parse_region
@@ -49,7 +49,16 @@ def suspect_site_extractor(target_seq, compute_motifs, num_sites, motifs_path=No
 
 
 def _extract_cai(objectives_text_summary, num_codons):
-    cai_score = float(objectives_text_summary.split('\n')[0].split(':')[1].strip())
+    """Parse the CAI objective's score out of DNAChisel's summary text, or
+    return None if there wasn't one (e.g. `organism_name` wasn't recognized,
+    so no codon-optimization objective was ever added - DNAChisel then
+    summarizes as "===> No specifications", which has no ':' to parse and
+    used to crash this with an unhandled IndexError).
+    """
+    first_line = objectives_text_summary.split('\n')[0]
+    if ':' not in first_line:
+        return None
+    cai_score = float(first_line.split(':')[1].strip())
     return np.exp(cai_score / num_codons).round(4)
 
 
@@ -66,7 +75,7 @@ def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
     motifs_collector = []
     sequences_for_doc = []
 
-    filename_indexes = path.basename(file[0]).split('.')[0]
+    filename_indexes = file_stem(file[0])
     curr_output_path = path.join(output_path, filename_indexes)
     Path(curr_output_path).mkdir(parents=True, exist_ok=True)
 
@@ -127,12 +136,15 @@ def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
                 orf_regions=orf_regions, exclusion_regions=exclusion_regions)
 
             with open(path.join(curr_output_path, 'final_sequence.txt'), "w") as text_file:
-                if custom_score_fn is None:
+                if custom_score_fn is None and maximal_cai is not None:
                     cai_constrained = _extract_cai(obj_description, num_codons)
                     text_file.write('The maximal CAI of gene (with no constraints) objective:\n')
                     text_file.write(f'{maximal_cai}\n')
                     text_file.write('The CAI of gene (after constraints) objective:\n')
                     text_file.write(f'{cai_constrained}\n')
+                elif custom_score_fn is None:
+                    text_file.write(
+                        "No codon-usage objective was applied (organism_name wasn't recognized).\n")
                 else:
                     text_file.write('Optimized using a custom score function instead of CAI/tAI.\n')
                 text_file.write('The number of codons edited due to hypermutable site constraints:\n')

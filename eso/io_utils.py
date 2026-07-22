@@ -17,6 +17,21 @@ FILE_ENDINGS = {
 }
 
 
+def file_stem(filepath):
+    """Basename with its extension(s) removed, preserving any other dots in
+    the stem itself. `path.basename(filepath).split('.')[0]` (used to
+    determine this) truncated at the FIRST dot, so a filename like
+    "sample.2024.fasta" silently became the stem "sample" instead of
+    "sample.2024" - meaning an `indexes` entry keyed on the intended full
+    stem would never match, silently falling back to no ORF/exclusion
+    regions instead of erroring.
+    """
+    name = path.basename(filepath)
+    if name.endswith('.gz'):
+        name = name[:-3]
+    return path.splitext(name)[0]
+
+
 def file_opener(file):
     """`file` is a (filepath, filetype) tuple, filetype in {'fasta', 'genbank'}."""
     filepath, filetype = file
@@ -55,7 +70,7 @@ def exclusion_gc_tester(file, indexes):
     partially overlaps those regions.
     """
     data = file_opener(file)
-    filename_indexes = path.basename(file[0]).split('.')[0]
+    filename_indexes = file_stem(file[0])
 
     legal_mini_gc = 1.0
     legal_maxi_gc = 0.0
