@@ -39,43 +39,54 @@ independently-developed algorithms; observed in 1/300 fuzz trials.
 
 ## Recombination detection
 
-### Cross-validated against the authoritative reference implementation - and found a real bug
+### Cross-validated against the authoritative reference implementation - initially "fixed" a constant, then had to revert that fix after reading the primary source
 
 Prompted by a direct ask to look for libraries or reference sources that
-would *increase trust*, not just speed - the strongest trust signal
-available wasn't a library at all, but the actual reference tool this whole
-scoring model is based on: the EFM Calculator
+would *increase trust*, not just speed - the first trust signal checked was
+the EFM Calculator tool itself
 ([github.com/barricklab/efm-calculator](https://github.com/barricklab/efm-calculator)),
 whose `get_recombo_rate()` implements the same formula shape
-`calc_recombination_score` does. Comparing them directly (fetched the source
-via `gh`/web fetch, not from memory) found a real discrepancy: our constant
-was `a=5.8`; the reference uses `a=8.8`.
+`calc_recombination_score` does. Its hardcoded constant is `a=8.8`, vs. our
+`a=5.8` - which was initially changed to match (see git history), based on
+that tool's own docstring attribution to "Oliveira et al." But that
+attribution was itself second-hand - not yet checked against the actual
+paper - and a direct challenge to go verify against the primary source
+before trusting the "fix" turned out to be warranted.
 
-Checked the reference repo's full commit history before concluding anything
-- `8.8` has been the value since the very first commit (2015-03-31),
-already attributed in that commit's own docstring to "the Oliviera, et al.
-formula" (a citation distinct from the Jack et al. 2015 EFM Calculator paper
-this codebase's docstrings cite for the tool overall). There is no point in
-the reference tool's history where `5.8` was ever correct - so this isn't a
-case of two legitimately different published versions; `5.8` appears to be a
-plain transcription error that entered somewhere in ESO_curr/STABLES'
-history and was faithfully carried through the port.
+**Reading Oliveira et al. 2008** (Plasmid 60:159-165,
+doi:10.1016/j.plasmid.2008.06.004) directly, Table 3 gives two full
+parameter sets for Eq. (4), `FR(LR,LS) = (A+LS)^(-a/LR) * LR/(1+B*LR+C*LS)`:
 
-**Quantified impact**: the `a=5.8` version systematically *overestimates*
-recombination risk (less-negative log10 score) by up to ~0.29 at short
-range/site length (e.g. location_delta=1, site_length=16: -4.675 vs. the
-correct -4.963) - enough to flip a result right at the `-9` filter cutoff,
-i.e. a real false-positive risk at the margin, not just a cosmetic score
-difference.
+| | A | B | C | a (exponent) |
+|---|---|---|---|---|
+| recA⁻ strains | 200.4 | 2163.0 | 14438.6 | 8.8 |
+| recA⁺ strains | 5.8 | 1465.6 | - | 29.0 |
 
-Fixed in both `eso.detection.recombination.calc_recombination_score` and
+Our `b=1465.6` and `alpha=29` match the recA⁺ row exactly - but that row's
+`A` constant is 5.8, not 8.8. The value 8.8 only appears in this table as
+the recA⁻ row's *exponent*, a different parameter of a different model.
+The EFM Calculator's own `a=8.8` therefore combines the recA⁺ row's B and
+exponent with the recA⁻ row's exponent mislabeled as `A` - a transcription
+mix-up in the reference tool between two rows of the same source table, not
+a correction to this codebase's original value. **`a=5.8` (the original
+ESO_curr/STABLES value) is what the primary source actually supports; the
+change to 8.8 was a mistake and has been reverted.**
+
+This is the standing lesson from this whole detour: cross-checking against a
+tool's *code* found a real-looking discrepancy, but only reading the actual
+*paper* the code claims to implement caught that the code itself doesn't
+match its own cited source. "Verified against the reference implementation"
+and "verified against the primary literature" are not the same claim, and
+shouldn't be reported interchangeably.
+
+Reverted in both `eso.detection.recombination.calc_recombination_score` and
 `eso.detection.staubility_variant.find_recombination_sites` (the formula is
-duplicated between them). Verified two ways: `calc_recombination_score` now
-matches the reference formula to floating-point precision
+duplicated between them), with docstrings now citing Oliveira et al. 2008
+directly instead of the EFM Calculator tool. `calc_recombination_score`'s
+reference test now pins to `a=5.8`
 (`test_calc_recombination_score_matches_efm_calculator_reference`), and a
-100-trial fuzz sweep confirms the change doesn't affect the underlying
-near-duplicate *detection* ability (still 0 misses) - only the risk score
-itself, as intended.
+100-trial fuzz sweep confirms this only affects the risk score, not the
+underlying near-duplicate *detection* ability (still 0 misses).
 
 **Two other library candidates were investigated for this same "increase
 trust" goal and ruled out** (not adopted, no code changes):
@@ -178,19 +189,23 @@ originally ported, before the pandas-overhead fix documented below**:
 
 `thorough` grew roughly quadratically with sequence length; `fast` stayed
 flat. **These numbers are now stale** - `thorough` is 5-78x faster than this
-table shows, and the crossover point for reaching for `fast` moved from
-~1-2kb out to the tens of kb. See below for current numbers and updated
-recommendation.
+table shows. See below for current numbers and updated recommendation (and
+further below, for numbers up to 1,000,000nt showing `thorough` never
+actually becomes impractical in the first place).
 
-### Recommendation (updated after the optimization below)
+### Recommendation (updated after the optimization below, and again after the 1Mb re-test below)
 
-- **`thorough` (default)** for anything from gene-length up through tens of kb
-  (see updated benchmark below) - `fast`'s sensitivity gap (missing a
-  centrally-mutated near-duplicate) is a real cost, so there's no reason to
-  pay it until `thorough`'s runtime actually becomes inconvenient.
-- **`fast`** once sequences get long enough that even the optimized
-  `thorough` cost matters (very large multi-kb+ constructs, whole plasmids,
-  or workloads processing many sequences where every second compounds).
+- **`thorough` (default)** for essentially any realistic sequence length -
+  gene-length through whole-plasmid scale and beyond, up to at least
+  1,000,000nt where it still finishes in ~2 minutes (see the 1Mb benchmark
+  further below). `fast`'s sensitivity gap (missing a centrally-mutated
+  near-duplicate) is a real cost, and no length was found in testing where
+  `thorough`'s own runtime forces the tradeoff - so there's no length-driven
+  reason to switch by default.
+- **`fast`** when the ~19-34x speed gap actually matters for a given
+  workload - many-sequence batch processing where every second compounds, or
+  sequences well beyond the 1Mb tested here - not because `thorough` becomes
+  impractical at any tested length, but because `fast` is simply faster.
 - Kept as two explicit modes rather than merged into one canonical
   implementation, per project decision (2026-07) - revisit if/when the
   slippage and methylation detector pairs are worked through and a pattern for
@@ -246,28 +261,87 @@ And pushed further, since it's now fast enough to test at scale:
 
 Growth is now roughly linear-to-mildly-superlinear rather than quadratic -
 51,300nt in 6.5s, where the old implementation's quadratic trend would have
-put it at tens of minutes. This is why the recommendation above changed: the
-practical crossover to `fast` moved from ~1-2kb out to the tens of kb.
+put it at tens of minutes. This is why the recommendation above changed:
+`thorough` stopped being the kind of implementation where reaching for
+`fast` at moderate lengths was ever necessary. (At the time this was
+written, the plan was to reach for `fast` "in the tens of kb" once
+`thorough` presumably got inconvenient beyond that - but that was an
+extrapolation, not a measurement; see the 1,000,000nt re-test further below,
+which found no such point up to 1Mb.)
 
-**Re-verified after the `ranges_overlap` and `a=5.8→8.8` fixes below**, since
-neither is a no-op on timing even though neither changes algorithmic
-complexity: `a=8.8` gives systematically lower (more negative) scores, so
-fewer marginal candidates survive the `-9` filter before the expensive
-elongation/collapse steps, which measurably *helps*:
+**Re-verified after the `ranges_overlap` fix and the revert back to `a=5.8`**,
+since neither is a no-op on timing even though neither changes algorithmic
+complexity (random ACGT sequences, `random.seed(0)`, single run per length,
+same methodology as the tables above):
 
-| Length (nt) | `thorough` (current) | `fast` (current) |
+| Length (nt) | `thorough` (a=5.8, current) | `fast` (a=5.8, current) |
 |---|---|---|
-| 400 | 0.255s | 0.017s |
-| 3,400 | 0.431s | 0.014s |
-| 6,600 | 0.748s | 0.020s |
-| 13,000 | 1.099s | 0.041s |
-| 25,800 | 2.202s | 0.077s |
-| 51,400 | 4.311s | 0.219s |
+| 400 | 0.034s | 0.001s |
+| 3,400 | 0.275s | 0.005s |
+| 6,600 | 0.447s | 0.012s |
+| 13,000 | 1.027s | 0.023s |
+| 25,800 | 2.025s | 0.046s |
+| 51,400 | 4.256s | 0.124s |
 
-Consistently faster than the table above (e.g. 51,300nt: 6.527s -> 4.311s),
-but the *shape* of the recommendation is unchanged - `thorough` vs. `fast`'s
-ratio is still ~20-27x in this range, so the crossover guidance above still
-holds exactly as stated.
+These are, if anything, a little faster than the transient `a=8.8` table
+above rather than slower - despite `a=5.8` giving systematically
+*higher* (less-negative) scores and thus letting more marginal candidates
+past the `-9` filter, as expected. With only one random sequence sampled per
+length (no injected repeat, so which incidental candidates show up is down
+to chance), run-to-run variance from the actual sequence content dominates
+over the constant's effect at this sample size - a second run at these same
+lengths landed within the same range (e.g. 51,400nt: 4.256s vs. 4.324s), so
+the numbers above are stable, but they shouldn't be read as isolating the
+`a=5.8` vs. `a=8.8` effect on its own.
+
+**Extended to 1,000,000nt (2026-07), because the "crossover to `fast` sits
+somewhere in the tens of kb" line above was never actually tested past
+51,400nt** - it was a plausible-sounding extrapolation, not a measurement. It
+turned out not to hold up: no crossover to "impractical" was found anywhere
+in the tested range. Same methodology as the table above (random ACGT,
+`random.seed(0)`, single run per length, no injected repeat):
+
+| Length (nt) | `thorough` | `fast` | thorough/fast |
+|---|---|---|---|
+| 100,000 | 10.633s | 0.457s | 23x |
+| 200,000 | 20.407s | 0.889s | 23x |
+| 400,000 | 45.597s | 2.079s | 22x |
+| 700,000 | 86.175s | 4.172s | 21x |
+| 1,000,000 | 126.651s | 6.815s | 19x |
+
+Growth from 51,400nt through 1,000,000nt stays close to linear throughout -
+local exponent (`log(time ratio)/log(size ratio)` between each successive
+pair of points, including the 51,400nt point above as the starting anchor)
+comes out to 1.38, 0.94, 1.16, 1.14, 1.08 across the five doubling-ish steps
+above. That's noisy (single run per point, no injected repeat, so which
+incidental near-duplicate candidates show up - and how many pairwise
+comparisons they trigger - varies with the specific random sequence, same
+caveat as the table above), but there's no trend of the exponent climbing
+as length grows, which is what true superlinear/quadratic blowup would look
+like. **`thorough` never became impractical at any length tested up to
+1,000,000nt** - the worst case measured was 126.7s (~2.1 minutes) at 1Mb,
+nowhere close to a 5+ minute threshold, let alone the tens-of-minutes the
+original pre-optimization quadratic implementation would have produced at
+far shorter lengths.
+
+**This means the "practical crossover to `fast` in the tens of kb" framing
+from the sections above was an overstatement and should be walked back.**
+No actual crossover point exists in the range tested (300nt to 1Mb) -
+`thorough` stays comfortably fast the entire way, growing roughly linearly
+rather than hitting a wall. `fast` is still meaningfully faster in absolute
+terms (~19-23x at these larger lengths, similar to the ~34x gap already
+noted at 51,400nt), so it remains worth reaching for when every second
+compounds - many-sequence batch workloads, or truly whole-genome-scale
+inputs well beyond 1Mb that weren't tested here. But `fast` is not required
+for tractability at any realistic construct size (whole plasmids included):
+it's a speed optimization on top of an already-practical `thorough`, not a
+rescue from an impractical one. The recommendation above ("`thorough`
+default, `fast` once its runtime actually matters") still holds, but the
+justification changes - not "`thorough` becomes inconvenient out in the
+tens of kb," but "`thorough` stays inconvenient-free through at least
+1,000,000nt, so `fast` is an optional speedup, not a requirement, unless a
+workload's realistic scale or volume makes even ~2 minutes per sequence add
+up."
 
 ## Slippage detection
 
@@ -505,5 +579,340 @@ previously - same story).
 
 ---
 
-*Methylation detector comparison: not yet done - see the open decisions list
-in the repo status summary.*
+## Methylation motif detection
+
+### Not the same shape of split as recombination/slippage - and, unlike those two, this one ended in deletion rather than a mode choice
+
+Recombination and slippage's two implementations are independently-arrived-at
+algorithms that (after fixing bugs) detect the *same* hotspots, differing only
+in speed or, for recombination, exact-vs-near-duplicate sensitivity. Motif
+detection's split was different in kind: `eso.detection.methylation` (Biopython
+PSSM) and `eso.detection.staubility_variant`'s `site_motif_grader`/
+`calc_max_site` scored sites by two genuinely different formulas, and neither
+had a top-level `find_motif_sites`-shaped wrapper or any test coverage before
+this comparison - `staubility_variant`'s motif code had never been exercised
+against real motif data or wired to anything.
+
+**Update**: `staubility_variant`'s motif scorer (`site_motif_grader`,
+`calc_max_site`, and the `find_motif_sites` wrapper built around them) has
+since been **deleted**, along with the `mode="raw_probability"` dispatch
+option, `--motif-mode` CLI flag, and `motif_mode` pipeline parameter that were
+initially built around it. The findings below led to the recommendation
+"use `pssm`, it's both more accurate and faster" - which meant there was no
+real reason to keep the inferior mode as a selectable option at all, rather
+than leaving it in as a cross-check. The rest of this section is kept as a
+historical record of that investigation, not as documentation of live code -
+`eso.detection.methylation` is now the only methylation motif detector.
+
+**`eso.detection.methylation`** scores each candidate site by its Biopython
+PSSM log-odds against the motif file's own stated background letter
+frequencies (`log2(observed_probability / background_probability)`, summed
+over the motif's positions) - the standard formulation, and background-aware.
+
+**`eso.detection.staubility_variant`** scores raw sequence probability under
+each motif's own per-position distribution
+(`sum(log10(P(observed letter at position i)))`), with **no background
+correction at all**.
+
+### A confirmed off-by-one bug, found before any correctness comparison was possible
+
+`calc_max_site` computed `end_index = start_index + num_nucleotides + 1`,
+reporting a site one nucleotide longer than the actual match. Verified
+directly: a clean 4nt exact match at position 4 in a hand-built sequence
+returned `actual_site = "ACGTG"` (5 characters) instead of `"ACGT"`. The
+score itself (computed inside `site_motif_grader`, using a correctly-sized
+slice) was unaffected - this only corrupted the reported coordinates and site
+string, which would have corrupted any downstream `AvoidPattern` constraint
+built from it, had this code ever been wired up. Fixed to
+`end_index = start_index + num_nucleotides` (exclusive, matching this
+codebase's convention elsewhere). Regression test:
+`test_calc_max_site_no_longer_off_by_one`.
+
+### The real finding: these two scores are only equivalent under a uniform background
+
+Reasoned first, then verified directly rather than trusted on reasoning
+alone (per the standing lesson from the recombination-constant detour):
+under a *uniform* background (0.25/letter), Biopython's log-odds score is a
+purely monotonic transform of the raw log10-probability score
+(`log-odds = (raw_log10_score - length*log10(0.25)) / log10(2)`), so the two
+implementations rank and threshold candidates identically. This was used to
+build a uniform-background-equivalent default threshold
+(`min_score = length * log10(0.25)` per motif) for `staubility_variant`'s new
+`find_motif_sites` wrapper, matching `eso.detection.methylation`'s implicit
+`PSSM_score > 0` filter - and confirmed empirically that both flag the same
+site under a uniform background
+(`test_both_implementations_find_the_same_exact_match_under_uniform_background`).
+
+Under a **realistic non-uniform background** (e.g. a GC-rich genome,
+A=0.2/C=0.3/G=0.3/T=0.2), this equivalence breaks down - not just in scale,
+in actual ranking. With one such background and motif, `"AATT"` and `"CCGG"`
+score *identically* under raw log10 probability (both -2.743, an artifact of
+this motif's PWM symmetry combined with these sequences' letter composition),
+while Biopython's log-odds score clearly separates them (0.175 vs. -2.165,
+over 2 apart - AATT is rare under this background, so a decent match to it is
+more surprising/noteworthy than an equally "good" raw match built from
+background-common C/G letters that the raw score can't distinguish from it).
+Verified in `test_implementations_diverge_under_non_uniform_background`.
+**`eso.detection.methylation` (`mode="pssm"`) is the principled default
+whenever a motif file's background isn't uniform - not a stylistic
+preference, a real accuracy difference.**
+
+### Benchmark: no speed advantage to offset the accuracy gap, either
+
+5 motifs (lengths 6-15), random ACGT sequences, `random.seed(0)`, single run
+per length:
+
+| Length (nt) | `pssm` (Biopython, current) | `raw_probability` (pure-Python, current) | ratio |
+|---|---|---|---|
+| 400 | 0.023s | 0.053s | 2.3x |
+| 3,400 | 0.148s | 0.194s | 1.3x |
+| 13,000 | 0.346s | 0.646s | 1.9x |
+| 51,400 | 1.324s | 2.077s | 1.6x |
+
+`raw_probability` is consistently slower (Biopython's `.calculate()` is
+C-optimized; `staubility_variant`'s is a pure-Python per-position loop),
+though the gap is modest (1.3-2.3x, not an order of magnitude) - this was
+`raw_probability`'s own bottleneck (or lack of one) relative to `pssm`'s
+existing implementation, not the same thing as `pssm` being internally
+optimal - see below, where a real, separate implementation-level bottleneck
+*was* found and fixed in `pssm` itself.
+
+### Implementation-level optimization: pssm's own bottleneck, found later
+
+The benchmark above compares `pssm` against `raw_probability` using only a
+handful of motifs - too few to expose `pssm`'s own scaling problem. With a
+more realistic multi-motif set (20 motifs, lengths 4-15, matching a curated
+methylation-motif database's typical size and length range), profiling
+(`cProfile`) found `eso.detection.methylation.find_motif_sites` spent about
+half its time in a `df.apply(axis=1)` call extracting each site's sequence -
+the same pandas-per-row-overhead anti-pattern already found and fixed in
+`eso.detection.recombination`/`slippage` - and most of the rest building and
+converting an intermediate long-format dataframe with
+`2 * num_motifs * len(seq)` rows (one row per motif, per strand, per
+position), just to reduce it down to "the best-scoring match per position."
+
+Rewrote to skip that intermediate dataframe entirely: build one
+`2*num_motifs x len(seq)` numpy score matrix directly (`-inf` where a motif
+doesn't reach that far), reduce it with a vectorized `np.argmax`, and extract
+site strings via a plain `zip()` loop instead of `df.apply`. Verified via 500
+randomized trials against the original logic - 0 genuine mismatches; the only
+divergences found were cases where two *different* motifs scored *exactly*
+equally at the same position, an inherent ambiguity the original code
+resolved only by accident (via `pandas.sort_values`'s default,
+non-deterministic quicksort) rather than by any documented rule - this
+rewrite resolves those ties deterministically (lowest `motif_number` first)
+instead, and both behaviors are pinned in `tests/test_detection_methylation.py`.
+
+Benchmarked with the same 20-motif set, `random.seed(0)`, single run per length:
+
+| Length (nt) | before | after | speedup |
+|---|---|---|---|
+| 3,400 | 0.254s | 0.018s | 14.1x |
+| 13,000 | 0.691s | 0.050s | 13.8x |
+| 51,400 | 2.850s | 0.197s | 14.5x |
+| 200,000 | 11.367s | 0.788s | 14.4x |
+| 1,000,000 | (not measured - old scaling makes this impractical) | 3.723s | - |
+
+A consistent ~14x speedup, roughly flat across scales (both implementations
+are linear in sequence length; this only removed constant-factor Python/pandas
+overhead, not a complexity-class change) - the same qualitative story as the
+recombination/slippage per-implementation fixes earlier in this doc.
+
+### Recommendation
+
+`eso.detection.methylation.find_motif_sites` (background-corrected PSSM) is
+the only methylation motif detector in this codebase now - it was both more
+accurate (background-aware) and faster than the alternative, so the
+alternative was removed rather than kept as a selectable mode. If a future
+need arises for a raw-probability/uniform-background variant, this section
+documents the exact formula difference and the off-by-one bug to avoid
+reintroducing.
+
+## eso.constraints - the detection-to-optimization boundary
+
+Not a detector, and not a comparison between implementations (there's only
+one) - included here because this is where the "what bugs were found and
+fixed" log for this codebase already lives, and this module sat completely
+untested despite being load-bearing: it converts detected hotspot dataframes
+into the actual DNAChisel `AvoidPattern` constraints that get optimized
+against, and trims sites around user-specified exclusion (locked) regions.
+A bug here silently changes what gets optimized, with no visible symptom -
+exactly the kind of thing worth reviewing the same way as the detectors.
+
+Two real bugs found, both at range boundaries under this codebase's
+exclusive-end convention (matching Python slicing,
+`eso.sequence_utils.parse_region`'s output, and
+`eso.detection.recombination`'s output after `_elongate_sites`):
+
+1. **`has_overlap_exclusion` treated touching ranges as overlapping** - the
+   same bug class already found and fixed in
+   `eso.detection._overlap.ranges_overlap`, but found independently here, in
+   a separate module that fix never touched. A site ending exactly where an
+   exclusion region begins (or starting exactly where one ends) shares no
+   actual nucleotide with it, but the `<`/`>` comparison (instead of
+   `<=`/`>=`) treated it as a conflict anyway. Fixed to `<=`/`>=`.
+
+2. **`exclusion_site_correcter` trimmed one nucleotide more than necessary**
+   on both sides of an exclusion region - `region[0] - 1` / `region[1] + 1`
+   instead of `region[0]` / `region[1]`. Not a data-corruption bug (the
+   trimmed `sequence` field always matched the true substring at its
+   resulting `start`/`end` - verified directly, not assumed, via 2,000
+   randomized trials checking `sequence == full_seq[start:end]`), but a real,
+   needless loss of one still-modifiable, non-excluded nucleotide per
+   exclusion boundary encountered - meaning slightly less of the sequence
+   than necessary was actually available to fix a detected hotspot whenever
+   it sat near a locked region.
+
+Both confirmed as real (not hypothetical) via direct reproduction before
+fixing, then verified via the same 2,000-trial randomized sweep: for every
+trial, the trimmed site's `sequence` matches the true substring, no longer
+overlaps any exclusion, and is *maximal* (extending it by one nucleotide on
+either side, when the original untrimmed site had room to, immediately hits
+either an exclusion or the original site's own boundary). See
+`tests/test_constraints.py` for the full test suite (18 tests) added
+alongside this - the module had none before.
+
+The rest of the module - `_indel_recombinations`/`_substitution_recombinations`
+(deciding which side of a detected recombination pair to mutate, and at what
+candidate sequences, to break its Levenshtein-distance-1 relationship) and
+`convert_df_to_constraints` (the final dataframe -> `AvoidPattern` list
+conversion) - was reviewed and tested but no further bugs were found.
+
+## eso.optimize - methylation-motif avoidance has never actually worked
+
+Found while reviewing `eso.optimize.optimization_engine` (also previously
+untested beyond one pipeline smoke test and the custom-score-specific tests):
+**the `df_motifs` -> `AvoidPattern` constraint path was completely inert.**
+Every methylation motif ESO ever detected and was asked to avoid during
+optimization was silently ignored - the constraint always reported itself as
+already satisfied, regardless of whether the motif was actually still present
+in the sequence, so nothing ever forced it to change.
+
+**Root cause**: `eso.detection.methylation.find_motif_sites` returns
+`end_index` as *inclusive* (the index of the motif's last nucleotide -
+`end_index = start_index + motif_length - 1`). Everywhere else in this
+codebase - `eso.sequence_utils.parse_region`'s output, `eso.constraints`'
+`has_overlap_exclusion`/`exclusion_site_correcter`, `convert_df_to_constraints`,
+and DNAChisel's own `Location` - uses *exclusive* end (matching Python
+slicing: `Location(3, 10).extract_sequence(seq) == seq[3:10]`, confirmed
+directly). `optimize.py`'s `df_mot` construction renamed `end_index` straight
+to `end` with no adjustment, so every motif's `AvoidPattern` location was
+built exactly one nucleotide short of the motif's actual length.
+
+DNAChisel's `AvoidPattern.evaluate()` searches for a pattern *only within its
+given location* (`SequencePattern.find_matches`'s docstring: "Only patterns
+entirely included in the segment will be returned" - confirmed by reading its
+source directly). A location one nucleotide shorter than the pattern it's
+supposed to contain can *structurally never* contain a match, so the
+constraint always scored 0 ("Passed. Pattern not found!") no matter what was
+actually in the sequence - not a subtle statistical effect, an unconditional
+no-op.
+
+**Confirmed directly, not assumed**: built a sequence with a real `GATC`
+(Dam) motif site inside GC-balanced flanks (so `EnforceGCContent` wouldn't
+force unrelated edits nearby that could mask the result either way), passed
+it through `optimization_engine` via `df_motifs`, and checked the exact
+4-nucleotide window at the motif's original position before and after.
+Before the fix: 0 edits, `GATC` completely untouched. After: 1 edit, the
+motif genuinely gone from that position, translation still preserved.
+
+**Fix**: `df_mot.loc[:, 'end'] = df_mot['end'].astype(int) + 1` (was
+`.astype(int)` with no adjustment) - converts the inclusive `end_index` to
+the exclusive `end` everything downstream expects. This is a narrow,
+targeted fix at the specific consumption site rather than changing
+`eso.detection.methylation`'s own `end_index` contract, since that module is
+self-consistent on its own (its `actual_site` slicing already correctly uses
+`end_index + 1`, verified by its own test suite) and changing its column
+semantics would be a wider, backward-incompatible change (e.g. for anyone
+already reading `end_index` out of the CSV output) for a bug that's really
+about how two already-self-consistent conventions get merged.
+
+**Impact**: any past run of this pipeline with `--compute-motifs` set would
+have detected methylation motifs correctly (that detector was fine) and
+reported them in `motif_sites.csv` correctly, but the actual DNA sequence
+optimization step would never have removed or altered any of them - the
+final "optimized" sequence could still contain every methylation hotspot the
+tool itself found and reported. Recombination and slippage avoidance were
+not affected (`eso.detection.recombination`/`slippage`'s own `end` columns
+are already exclusive - see their own docs above).
+
+Verified via `tests/test_optimize.py` (8 tests, this module had none before),
+including the regression test for this bug, one confirming exclusion regions
+are still respected for motif sites too, and basic sanity checks (translation
+preservation, GC-content enforcement, unknown-organism handling,
+recombination/slippage avoidance mechanics).
+
+## eso.io_utils - exclusion-region validation checked the wrong variable
+
+Also previously untested. `test_input`'s exclusion-region validation looped
+over `orf_indexes` (the ORF regions, already validated in the block just
+above it) instead of the just-parsed `region_indexes` - so a malformed
+exclusion region (an unparseable string, or a valid-looking one with
+`start >= end`) was never actually checked. It silently passed validation
+and only surfaced later as a confusing, unrelated GC-limit error message
+(`"the maximal GC limit must be at least 1.0 and the minimal GC limit must
+be at most 0.0"`, from `exclusion_gc_tester` being fed a nonsensical region)
+instead of the clear, specific validation message that already existed and
+was meant to catch exactly this. Confirmed directly:
+`test_input(0.3, 0.7, {('f', '0'): ('1-9', '10-5')}, [])` returned the
+GC-limit error before the fix; after, the actual
+`'Start index must be smaller than end index, also for exclusion sites!'`
+message. Fixed by changing the loop variable. Verified via
+`tests/test_io_utils.py` (17 tests, this module had none before), covering
+GC-bounds validation, ORF/exclusion region validation (including this
+regression), file discovery (`relevant_file_paths`), and file
+opening/gzip handling (`file_opener`).
+
+(Noted but not chased further, given it's cosmetic and pre-existing: a
+`RuntimeWarning: invalid value encountered in scalar divide` surfaces from
+DNAChisel's `biotools.gc_content` when `exclusion_gc_tester` computes the GC
+content of an empty window overlap (0/0) - doesn't affect the actual
+validation result in the cases tested, but could be worth a guard clause if
+`exclusion_gc_tester` gets revisited.)
+
+## eso.codon_usage - the kompas table's stop-codon data was silently unusable
+
+Also previously untested. `cub_kompas()` builds its table from 3-letter
+amino acid codes (`'Ala'`, `'Arg'`, ..., and `'END'` for the stop codons),
+converted to the single-letter codes DNAChisel's `CodonOptimize` expects via
+`Bio.SeqUtils.seq1`. `seq1('END')` returns `'X'` (undefined amino acid), not
+`'*'` (stop) - confirmed directly, not assumed. So the kompas table's
+TAA/TAG/TGA frequencies were silently filed under the wrong key, and
+`CodonOptimize` never had real stop-codon usage data to score against for
+this host - not a crash, just quietly-absent data (`'*' not in table`,
+confirmed directly). Fixed with an explicit `'END' -> '*'` special case.
+
+While reviewing, also verified (not assumed) that all four bundled tables -
+`C1`, `kompas`, `human_antibody_heavy_chain`, `human_antibody_light_chain` -
+have exactly the 20 standard amino acids plus stop as keys, that every codon
+actually translates (via `Bio.Seq.translate()`) to the amino acid it's filed
+under, and that each amino acid's codon frequencies sum to ~1.0. No further
+issues found. The two CSV-backed antibody tables don't include stop-codon
+data at all (confirmed by inspecting the CSVs directly) and correctly fall
+back to the documented default `{'TAA': 0.33, 'TAG': 0.33, 'TGA': 0.34}`.
+Verified via `tests/test_codon_usage.py` (14 tests, this module had none
+before).
+
+## eso.report - a repeated sequence name could swallow its own page break
+
+Also previously untested (and python-docx, needed to test it, wasn't even
+installed in the dev environment - added to `pyproject.toml`'s dev
+dependency group). `create_word_document_with_highlighted_differences`
+decided whether to add a page break after each entry via
+`if seq_name != sequences_data[-1][0]` - comparing by *name*, not position.
+If an entry's name happened to match the true last entry's name (e.g. two
+files, or two records, that coincidentally share a stem), it would wrongly
+skip its own page break too. Confirmed directly: three entries where the
+first and third share a name (`'gene'`) produced only 1 page break instead
+of the expected 2. Fixed by comparing position (`index != len(sequences_data) - 1`)
+instead of name. Verified via `tests/test_report.py` (6 tests, this module
+had none before - gracefully skipped if the optional `python-docx` dependency
+isn't installed, matching `eso.report`'s own optional-dependency design),
+including direct inspection of the generated `.docx`'s actual page breaks
+and per-character highlighting (not just "did it not crash").
+
+This closes out the module-by-module review pass across the rest of `eso/`
+(`constraints.py`, `optimize.py`, `io_utils.py`, `codon_usage.py`,
+`report.py`) that followed the same detector comparisons above - five
+previously-untested modules, five real bugs found and fixed, all documented
+here alongside the detector work.
