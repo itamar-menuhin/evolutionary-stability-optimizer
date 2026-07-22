@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Troubleshooting (check this first)
+    url: https://github.com/itamar-menuhin/evolutionary-stability-optimizer#troubleshooting
+    about: Covers the most common first-run problems - command not found, a build error during install, wrong Python version, no files found.

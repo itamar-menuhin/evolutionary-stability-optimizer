@@ -1,0 +1,57 @@
+name: Bug report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: checkboxes
+    id: checked-troubleshooting
+    attributes:
+      label: Checked the README first?
+      description: >-
+        The README's Troubleshooting section
+        (https://github.com/itamar-menuhin/evolutionary-stability-optimizer#troubleshooting)
+        covers the most common first-run issues (command not found, a Visual
+        Studio/CMake install error, wrong Python version, no files found).
+      options:
+        - label: I checked Troubleshooting and my issue isn't covered there
+          required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: e.g. Windows 11, Ubuntu 22.04, macOS 14
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      description: Run `python --version` and paste the output.
+      placeholder: e.g. Python 3.11.9
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: The exact command you ran
+      render: bash
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: Paste the full terminal output, including any error message - don't summarize it.
+      render: text
+    validations:
+      required: true
