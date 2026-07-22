@@ -2,6 +2,8 @@
 windows, codon usage, and avoidance of detected hypermutable sites.
 """
 
+import warnings
+
 import pandas as pd
 import dnachisel
 from dnachisel.DnaOptimizationProblem import NoSolutionError
@@ -39,6 +41,18 @@ from eso.detection.slippage import modify_df_slippage
 # still failing, exactly as it already did for DNAChisel's own
 # NoSolutionError-with-no-named-constraint case.
 _LOCALIZED_NONE_CRASH_MESSAGE = "'NoneType' object has no attribute 'evaluate'"
+
+
+def _warn_dropped_constraint(constraint):
+    warnings.warn(
+        f"Could not satisfy constraint {constraint} - dropping it and continuing without it. "
+        "This most often happens when disrupting a detected hypermutable site would require a "
+        "change that conflicts with another hard constraint, most commonly translation "
+        "preservation (e.g. every synonymous codon at that position still contains the pattern "
+        "being avoided, such as a homopolymer landing on a Met/Trp codon with no alternative). "
+        "The site this constraint was protecting was left unmodified in the final sequence.",
+        stacklevel=3,
+    )
 
 
 def _codon_optimization_objectives(organism_name, orf_regions, method):
@@ -187,6 +201,7 @@ def optimization_engine(
             break
         except NoSolutionError as e:
             if e.constraint is not None:
+                _warn_dropped_constraint(e.constraint)
                 cnst.remove(e.constraint)
                 flag += 1
                 continue
@@ -223,6 +238,7 @@ def optimization_engine(
             if not failing:
                 raise
             for constraint in failing:
+                _warn_dropped_constraint(constraint)
                 cnst.remove(constraint)
             flag += 1
     else:

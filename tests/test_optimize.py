@@ -14,6 +14,8 @@ before fixing: a GATC motif passed via df_motifs survived optimization
 completely untouched (0 edits, exact original sequence at that position).
 """
 
+import warnings
+
 import pandas as pd
 import pytest
 
@@ -180,8 +182,16 @@ def test_non_codon_aligned_homopolymer_falls_back_to_dropping_the_site():
         "num_base_units": 12, "log10_prob_slippage_ecoli": -1.0,
     }])
 
-    final_seq, _, _ = optimization_engine(
-        seq, df_slippage=df_slippage, organism_name="kompas")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        final_seq, _, _ = optimization_engine(
+            seq, df_slippage=df_slippage, organism_name="kompas")
 
     assert len(final_seq) == len(seq)
     assert final_seq[:3] == "ATG" and final_seq[-3:] in ("TAA", "TAG", "TGA")
+
+    # the user must be told this happened, and roughly why - not just left to
+    # infer it from a lower-than-expected num_edits.
+    messages = [str(w.message) for w in caught]
+    assert any("Could not satisfy constraint" in m for m in messages)
+    assert any("translation preservation" in m for m in messages)
