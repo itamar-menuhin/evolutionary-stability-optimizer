@@ -103,20 +103,21 @@ and to reach out to whoever shared this GPT with her.
 
 In the Configure tab, just below Instructions, there's a "Conversation starters" section
 - these show as clickable chips when someone opens the GPT with a blank conversation,
-which matters most for a first-time user who doesn't know what to ask yet. Add these
-four, one per tier of help:
+which matters most for a first-time user who doesn't know what to ask yet. The chips
+truncate long text with an ellipsis, so keep these short - add these four, one per tier
+of help:
 
 ```
-Help me install ESO and run my first optimization
+Install ESO for the first time
 ```
 ```
-I want to write my own scoring function instead of CAI/tAI
+Write a custom scoring function
 ```
 ```
-How do I call ESO from my own Python script instead of the command line?
+Use ESO from my own Python code
 ```
 ```
-How does this differ from what's described in the ESO paper?
+How does this differ from the paper?
 ```
 
 That last one is worth keeping even though it's the most advanced starter - it invites
