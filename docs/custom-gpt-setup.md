@@ -99,7 +99,32 @@ just calling its existing functions), tell her that's outside what you can help 
 and to reach out to whoever shared this GPT with her.
 ```
 
-## 5. Knowledge files
+## 5. Conversation starters
+
+In the Configure tab, just below Instructions, there's a "Conversation starters" section
+- these show as clickable chips when someone opens the GPT with a blank conversation,
+which matters most for a first-time user who doesn't know what to ask yet. Add these
+four, one per tier of help:
+
+```
+Help me install ESO and run my first optimization
+```
+```
+I want to write my own scoring function instead of CAI/tAI
+```
+```
+How do I call ESO from my own Python script instead of the command line?
+```
+```
+How does this differ from what's described in the ESO paper?
+```
+
+That last one is worth keeping even though it's the most advanced starter - it invites
+exactly the question docs/paper-vs-implementation.md exists to answer well (the site-limit
+and recombination-matching defaults that don't match the paper), rather than leaving her
+to discover those differences the hard way by comparing outputs herself.
+
+## 6. Knowledge files
 
 Upload these (Configure tab -> Knowledge -> Upload files):
 
@@ -136,7 +161,7 @@ tab - **use your author's accepted-manuscript version, not the ACS publisher PDF
   permanently once the repo is, and not easily undone (anyone can find it in old commits
   even if later deleted).
 
-## 6. Capabilities (Configure tab, further down)
+## 7. Capabilities (Configure tab, further down)
 
 - **Web Browsing**: off - there's no need for it, and it risks the GPT wandering into
   unrelated/outdated info instead of using the knowledge files.
@@ -147,13 +172,13 @@ tab - **use your author's accepted-manuscript version, not the ACS publisher PDF
 - **Image generation**: off.
 - **Actions**: none needed.
 
-## 7. Visibility
+## 8. Visibility
 
 Since the repo itself is still private, set sharing to **"Only me"** or **"Anyone with
 the link"** (not "Public"/GPT Store) - the second lets you send your colleague a direct
 link without listing it publicly. Change this later if/when the repo goes public.
 
-## 8. Keeping it in sync
+## 9. Keeping it in sync
 
 The knowledge files are static snapshots - if the README or any of the uploaded source
 files change (a new flag, an updated Troubleshooting entry, a new `optimization_engine`
