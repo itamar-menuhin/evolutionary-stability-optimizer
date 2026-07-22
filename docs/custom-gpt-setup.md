@@ -167,11 +167,10 @@ tab - **use your author's accepted-manuscript version, not the ACS publisher PDF
 - ACS's (like most publishers') self-archiving policy typically lets an author share
   their own accepted manuscript with individuals or upload it to a private tool, but the
   publisher's own typeset PDF is more clearly their copyright to redistribute, not yours.
-- Even with the accepted manuscript, this repo is planned to go public eventually - a
-  private GPT knowledge upload (visible only to whoever you share the GPT link with) is a
-  narrower, safer scope than committing the file to git history, which is public
-  permanently once the repo is, and not easily undone (anyone can find it in old commits
-  even if later deleted).
+- This repo is public - a GPT knowledge upload (visible only within that specific GPT,
+  not indexed or crawlable) stays a narrower scope than committing the file to git
+  history, which is public permanently and not easily undone (anyone can find it in old
+  commits even if later deleted).
 
 ## 7. Capabilities (Configure tab, further down)
 
@@ -186,9 +185,11 @@ tab - **use your author's accepted-manuscript version, not the ACS publisher PDF
 
 ## 8. Visibility
 
-Since the repo itself is still private, set sharing to **"Only me"** or **"Anyone with
-the link"** (not "Public"/GPT Store) - the second lets you send your colleague a direct
-link without listing it publicly. Change this later if/when the repo goes public.
+Set sharing to **"Anyone with the link"** (not "Public"/GPT Store) - this lets you share
+a direct link with your colleague (or, since the repo is public, anyone who finds it
+through this README) without listing the GPT itself in ChatGPT's public directory. The
+GPT's own visibility is independent of the repo's - the repo being public doesn't force
+the GPT to be discoverable beyond whoever has the link.
 
 ## 9. Keeping it in sync
 
