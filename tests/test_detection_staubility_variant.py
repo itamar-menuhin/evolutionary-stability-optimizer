@@ -93,7 +93,7 @@ def test_recombination_score_matches_efm_calculator_reference():
     location_delta = row.start_2 - row.end_1
     site_length = row.end_1 - row.start_1
     reference = math.log10(
-        ((8.8 + location_delta) ** (-29.0 / site_length))
+        ((5.8 + location_delta) ** (-29.0 / site_length))
         * (site_length / (1 + 1465.6 * site_length))
     )
     assert row.log10_prob_recombination_ecoli == pytest.approx(reference, abs=1e-6)

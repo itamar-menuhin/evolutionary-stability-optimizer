@@ -73,17 +73,16 @@ def test_calc_recombination_score_decreases_with_distance():
 
 
 def test_calc_recombination_score_matches_efm_calculator_reference():
-    # Pins the formula to the authoritative reference implementation
-    # (github.com/barricklab/efm-calculator, get_recombo_rate, E. coli/yeast
-    # case) - not just our own internal consistency. Confirmed via that
-    # repo's git history that a=8.8 has been the value since its first
-    # commit (2015-03-31); this codebase had inherited a wrong a=5.8 from
-    # ESO_curr/STABLES (see calc_recombination_score's docstring).
+    # Pins the formula to the primary source (Oliveira et al. 2008, Plasmid
+    # 60:159-165, Table 3, recA+ row: A=5.8, B=1465.6, a=29.0) - not just our
+    # own internal consistency. See calc_recombination_score's docstring for
+    # why the EFM Calculator tool's own hardcoded A=8.8 is a mix-up with a
+    # different row/parameter of that same table, not a correction.
     import math
 
     def efm_reference(location_delta, site_length):
         return math.log10(
-            ((8.8 + location_delta) ** (-29.0 / site_length))
+            ((5.8 + location_delta) ** (-29.0 / site_length))
             * (site_length / (1 + 1465.6 * site_length))
         )
 

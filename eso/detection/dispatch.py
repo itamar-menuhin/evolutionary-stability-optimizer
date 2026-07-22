@@ -2,9 +2,10 @@
 so callers choose a tradeoff without needing to know which module originally
 implemented which algorithm.
 
-Covers recombination and slippage detection; methylation has its own
-primary/alternate split too (see eso.detection.methylation vs.
-eso.detection.staubility_variant) but isn't wired into dispatch yet.
+Covers recombination and slippage detection; methylation has only one
+implementation (eso.detection.methylation) - a second was built and compared
+here, but removed after it was found to disagree in accuracy (not just
+speed) with the first - see docs/detector-comparisons.md.
 """
 
 import numpy as np
@@ -28,11 +29,11 @@ def find_recombination_sites(seq, num_sites=np.inf, mode="thorough"):
 
     mode="thorough" (default) - eso.detection.recombination: Levenshtein-tolerant,
         catches pairs of sites within edit distance 1 of each other, not just
-        exact duplicates. Recommended for essentially all sequence lengths up
-        through tens of kb (~6.5s at 51,300nt in local benchmarks, after
-        fixing a pandas-overhead bottleneck - see docs/detector-comparisons.md)
-        - there's no reason to pay "fast"'s sensitivity gap until this
-        actually becomes inconvenient.
+        exact duplicates. Benchmarked as roughly linear from 51,400nt through
+        1,000,000nt (~126.7s at 1,000,000nt, in local benchmarks after fixing
+        a pandas-overhead bottleneck - see docs/detector-comparisons.md), with
+        no breakdown point found at any tested scale - recommended by default
+        at essentially any realistic sequence length.
 
     mode="fast" - eso.detection.staubility_variant: exact 16-mer match only,
         via vectorized n-gram counting. Will miss a near-duplicate whenever
@@ -40,8 +41,9 @@ def find_recombination_sites(seq, num_sites=np.inf, mode="thorough"):
         exact window survives on either side (verified: catches a duplicate
         with a 1nt substitution near either edge, since 16+nt of exact match
         remains; misses the same case when the substitution is centered).
-        Reach for this only once "thorough"'s runtime actually matters (very
-        large multi-kb+ constructs, or many-sequence batch workloads).
+        19-34x faster than "thorough" at every length tested - reach for this
+        only when that speed gap itself matters (e.g. many-sequence batch
+        workloads), not because "thorough" becomes intractable.
     """
     try:
         detector = RECOMBINATION_MODES[mode]

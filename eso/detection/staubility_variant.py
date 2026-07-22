@@ -7,6 +7,15 @@ approach than eso.detection.recombination/slippage:
 - Slippage: per-frameshift scan for back-to-back repeats, vs. the
   find-all-occurrences approach in eso.detection.slippage.
 
+This module also carried a methylation-motif scorer (site_motif_grader/
+calc_max_site) at one point; removed after comparison against
+eso.detection.methylation found it scored candidates by raw sequence
+probability with no background correction, which measurably disagrees with
+(not just runs slower than) eso.detection.methylation's background-corrected
+approach whenever a motif's background isn't uniform - see
+docs/detector-comparisons.md for the full writeup, kept as a historical
+record even though the code itself is gone.
+
 Kept as a separate module rather than merged into the primary detectors -
 these are two independently-arrived-at implementations of the same EFM
 Calculator concept and haven't yet been reconciled into one canonical API.
@@ -70,10 +79,11 @@ def find_recombination_sites(seq, num_sites=np.inf):
     df_recombination.loc[:, 'location_delta'] = df_recombination.start_2 - df_recombination.end_1
     df_recombination.loc[:, 'site_length'] = df_recombination.end_1 - df_recombination.start_1
 
-    # a=8.8 per the EFM Calculator reference implementation (see
+    # a=5.8 per Oliveira et al. 2008, Table 3, recA+ row (see
     # eso.detection.recombination.calc_recombination_score's docstring for
-    # the full story - this codebase inherited a wrong 5.8 from ESO_curr/STABLES).
-    a, b, c, alpha = 8.8, 1465.6, 0, 29
+    # the full story, including why the EFM Calculator's own 8.8 is a
+    # mix-up with a different row/parameter of that same table).
+    a, b, c, alpha = 5.8, 1465.6, 0, 29
     base = a + df_recombination['location_delta']
     exponent = -1 * alpha / df_recombination['site_length']
     scale = df_recombination['site_length'] / (
@@ -187,63 +197,6 @@ def find_slippage_sites(seq, num_sites=np.inf):
         df_slippage = df_slippage.head(num_sites)
 
     return df_slippage
-
-
-def site_motif_grader(start_index, motif, seq, curr_prob):
-    """Similarity score between the sequence starting at `start_index` and `motif`
-    (a dict of {position: {nucleotide: probability}, 'num_nucleotides': int}).
-    """
-    conjugate_dict = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G'}
-    num_nucleotides = motif['num_nucleotides']
-
-    curr_seq = seq[start_index:(start_index + num_nucleotides)]
-    if len(curr_seq) < num_nucleotides:
-        return num_nucleotides, -np.inf
-
-    curr_seq_conjugate = ''.join(conjugate_dict[x] for x in curr_seq[::-1])
-
-    sum_prob_log10 = 0
-    for ii, x in enumerate(curr_seq):
-        sum_prob_log10 += np.log10(motif[ii][x])
-        if sum_prob_log10 < curr_prob:
-            break
-
-    sum_prob_conj = 0
-    for ii, x in enumerate(curr_seq_conjugate):
-        sum_prob_conj += np.log10(motif[ii][x])
-        if sum_prob_conj < curr_prob:
-            break
-
-    return num_nucleotides, max(sum_prob_log10, sum_prob_conj)
-
-
-def calc_max_site(start_index, seq, motif_probs, limit_output, min_score):
-    """Find the highest-scoring motif match at `start_index` across all motifs in `motif_probs`."""
-    log10_site_match = min_score if limit_output else -np.inf
-    curr_prob_log10 = log10_site_match
-    end_index = start_index
-    matching_motif = ''
-    actual_site = ''
-    actual_site_rev_conj = ''
-
-    conjugate_dict = {'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G'}
-
-    for site_name, motif in motif_probs.items():
-        num_nucleotides, curr_prob_log10 = site_motif_grader(start_index, motif, seq, curr_prob_log10)
-
-        if curr_prob_log10 > log10_site_match:
-            log10_site_match = curr_prob_log10
-            matching_motif = site_name
-            end_index = start_index + num_nucleotides + 1
-            actual_site = seq[start_index:end_index]
-            actual_site_rev_conj = ''.join(conjugate_dict[x] for x in actual_site[::-1])
-        else:
-            curr_prob_log10 = log10_site_match
-
-    if log10_site_match == min_score:
-        return (), -np.inf
-
-    return (actual_site, actual_site_rev_conj, matching_motif, start_index, end_index, log10_site_match), log10_site_match
 
 
 def suspect_site_extractor(seq, num_sites=np.inf, extension=''):
