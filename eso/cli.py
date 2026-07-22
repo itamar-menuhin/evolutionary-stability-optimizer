@@ -6,6 +6,7 @@ import sys
 import numpy as np
 
 from eso.custom_score import CustomScoreFileError, load_custom_score_from_file
+from eso.io_utils import IndexesFileError, load_indexes_from_file
 from eso.pipeline import main as run_pipeline
 
 
@@ -51,6 +52,11 @@ def build_parser():
                         help="Both detect identical hotspots; 'default' is also faster at every length "
                              "tested (see eso.detection.dispatch) - 'fast' is kept as an independent "
                              "cross-check implementation, not for its speed.")
+    parser.add_argument('--indexes-file', default=None,
+                        help="Path to a JSON file specifying ORF/exclusion regions per sequence - see "
+                             "examples/indexes_template.json for a copyable starting point (region "
+                             "strings are 1-indexed and inclusive, e.g. \"1-6, 51-68\"). Omit to treat "
+                             "entire sequences as the ORF with no exclusions.")
     return parser
 
 
@@ -68,6 +74,14 @@ def main(argv=None):
             print(str(e), file=sys.stderr)
             return 1
 
+    indexes = None
+    if args.indexes_file is not None:
+        try:
+            indexes = load_indexes_from_file(args.indexes_file)
+        except IndexesFileError as e:
+            print(str(e), file=sys.stderr)
+            return 1
+
     message, results = run_pipeline(
         input_folder=args.input_folder,
         output_path=args.output_path,
@@ -80,6 +94,7 @@ def main(argv=None):
         maxi_gc=args.maxi_gc,
         method=args.method,
         organism_name=args.organism_name,
+        indexes=indexes,
         recombination_mode=args.recombination_mode,
         slippage_mode=args.slippage_mode,
         custom_score_fn=custom_score_fn,

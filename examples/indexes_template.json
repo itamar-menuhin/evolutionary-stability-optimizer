@@ -1,0 +1,8 @@
+[
+  {
+    "file": "my_gene",
+    "seq_index": "0",
+    "orf_regions": "1-6, 51-68",
+    "exclusion_regions": "1-6, 50-68"
+  }
+]

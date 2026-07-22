@@ -137,6 +137,74 @@ def test_organism_and_method_flags_reach_pipeline(monkeypatch):
     assert captured['method'] == 'match_codon_usage'
 
 
+def test_indexes_file_flag_reaches_pipeline_as_the_expected_dict(tmp_path, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(cli, 'run_pipeline', _fake_pipeline(captured))
+
+    indexes_path = tmp_path / "indexes.json"
+    indexes_path.write_text(
+        '[{"file": "my_gene", "seq_index": "0", "orf_regions": "1-6, 51-68", '
+        '"exclusion_regions": "1-6, 50-68"}]'
+    )
+
+    exit_code = cli.main(['--indexes-file', str(indexes_path)])
+
+    assert exit_code == 0
+    assert captured['indexes'] == {("my_gene", "0"): ("1-6, 51-68", "1-6, 50-68")}
+
+
+def test_no_indexes_file_flag_leaves_it_none(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(cli, 'run_pipeline', _fake_pipeline(captured))
+
+    exit_code = cli.main([])
+
+    assert exit_code == 0
+    assert captured['indexes'] is None
+
+
+def test_bad_indexes_file_fails_fast_with_friendly_message(tmp_path, capsys):
+    indexes_path = tmp_path / "indexes.json"
+    indexes_path.write_text('{not valid json')
+
+    exit_code = cli.main(['--indexes-file', str(indexes_path)])
+
+    assert exit_code == 1
+    assert "isn't valid JSON" in capsys.readouterr().err
+
+
+def test_indexes_file_actually_locks_the_exclusion_region_end_to_end(tmp_path, monkeypatch):
+    # exercises the real pipeline (not a mock): an exclusion region declared
+    # via --indexes-file must genuinely survive optimization untouched.
+    monkeypatch.chdir(tmp_path)
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    output_dir = tmp_path / "output"
+
+    seq = "ATG" + "TTT" * 10 + "TAA"
+    (input_dir / "gene.fasta").write_text(f">gene\n{seq}\n")
+
+    indexes_path = tmp_path / "indexes.json"
+    indexes_path.write_text(
+        '[{"file": "gene", "seq_index": "0", "orf_regions": "1-33", "exclusion_regions": "4-33"}]'
+    )
+
+    exit_code = cli.main([
+        '--input-folder', str(input_dir),
+        '--output-path', str(output_dir),
+        '--indexes-file', str(indexes_path),
+        '--organism-name', 'kompas',
+    ])
+
+    assert exit_code == 0
+    final_sequence_path = output_dir / "gene" / "final_sequence.txt"
+    contents = final_sequence_path.read_text()
+    final_seq = ''.join(
+        line.strip() for line in contents.splitlines()[contents.splitlines().index("The final sequence is:") + 1:]
+    )
+    assert final_seq[3:33] == seq[3:33]
+
+
 def test_cli_main_module_actually_imports_pipeline_main():
     # sanity check that eso.cli.run_pipeline is really eso.pipeline.main,
     # not a stale copy - the monkeypatch-based tests above would pass even

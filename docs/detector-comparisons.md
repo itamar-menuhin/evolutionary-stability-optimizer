@@ -1058,3 +1058,61 @@ argparse's own choice validation), on top of the pre-existing
 `tests/test_cli_custom_score.py`. No further issues found in `cli.py`
 itself - it's a thin, mostly-mechanical argparse-to-`pipeline.main()`
 wrapper.
+
+## Follow-up: closing out the four remaining known gaps
+
+Four items were left open after the review above - one residual limitation
+and three known-but-deferred items. All four are now addressed.
+
+**A dropped constraint now warns the user, with a reason.** Previously,
+when `optimization_engine`'s retry loop dropped a constraint (see the
+DNAChisel-crash section above), it did so silently - the only visible
+symptom was `num_edits` coming back lower than expected, with nothing
+telling the user *which* site survived or *why*. Added
+`_warn_dropped_constraint`, called from both places the retry loop drops a
+constraint, using Python's `warnings.warn`: it names the specific
+constraint and gives a one-paragraph, minimal explanation (disrupting the
+site would require a change that conflicts with another hard constraint,
+most commonly translation preservation - e.g. a homopolymer landing on a
+Met/Trp codon that has no synonymous alternative at all). Verified directly
+that the T-homopolymer scenario from the earlier section now emits one
+`UserWarning` per dropped position, and added a regression test asserting
+both the warning fires and its explanation mentions translation
+preservation.
+
+**Two cosmetic warnings, fixed.** `eso.codon_usage._load_bundled_csv_cub`'s
+`df.groupby('aa').apply(...)` triggered a pandas `FutureWarning` about
+grouping columns being included in the group operation - fixed with
+`include_groups=False` (the lambda only ever used the `codon`/
+`freq_within_aa` columns, never `aa` itself, so this changes nothing about
+the result). `eso.io_utils.exclusion_gc_tester` called
+`biotools.gc_content('')` whenever a sliding window genuinely didn't
+overlap any exclusion region (confirmed this is a real, reachable path, not
+hypothetical - e.g. a window entirely before the region under test) - `0/0`
+raised a `RuntimeWarning` and returned `NaN`. The `NaN` turned out to be
+harmless in practice (it's immediately multiplied by `len(overlap) == 0`
+inside a `max()`/`min()` comparison, and both of Python's `max`/`min` treat
+a `NaN` second argument as "not greater/less", so it's silently dropped
+without corrupting `curr_max_gc`/`curr_min_gc`) - but relying on that
+comparison-with-`NaN` quirk to be harmless isn't something to depend on, so
+fixed by skipping the `gc_content` call entirely when `overlap` is empty
+(`curr_gc = 0.0` instead). Verified both fixes directly by re-running the
+affected tests with `-W error::FutureWarning -W error::RuntimeWarning` -
+they now pass clean.
+
+**`--indexes-file`, a CLI flag for ORF/exclusion regions.** `indexes` (which
+regions of each sequence are the translation-preserving ORF, and which are
+locked from editing entirely) was only reachable by calling
+`eso.pipeline.main` directly from Python - there was no CLI equivalent,
+since the parameter's native shape (a dict keyed by `(file_stem,
+seq_index)` tuples) doesn't serialize to JSON as-is. Added
+`eso.io_utils.load_indexes_from_file` (JSON list of `{"file", "seq_index",
+"orf_regions", "exclusion_regions"}` objects, converted into the dict shape
+`pipeline.main` expects) and `--indexes-file` in `cli.py`, following the
+same eager-validation-with-a-friendly-message pattern as
+`--custom-score-file`/`CustomScoreFileError`. Added
+`examples/indexes_template.json` as a copyable starting point and a new
+README section. Verified with unit tests for the loader itself (missing
+file, invalid JSON, wrong top-level type, missing required keys) and an
+end-to-end CLI test confirming a declared exclusion region genuinely
+survives optimization untouched when set via `--indexes-file`.

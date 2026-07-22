@@ -168,6 +168,53 @@ CLI) treats a *lower* `score_fn` value as better, instead of higher.
 the file-based loader or the CLI yet - only relevant if you need to score just part of a
 sequence rather than the whole thing.
 
+## Restricting ORF and exclusion regions per sequence
+
+By default, the entire sequence is treated as one in-frame, translation-preserving ORF
+with nothing locked. To instead give each sequence its own ORF region(s) (e.g. skip a
+UTR) and/or exclusion regions that must never be edited (e.g. a known regulatory
+element), pass `indexes` (from Python) or `--indexes-file` (from the CLI).
+
+From the command line, point at a JSON file - copy
+[`examples/indexes_template.json`](examples/indexes_template.json) as a starting point:
+
+```json
+[
+  {
+    "file": "my_gene",
+    "seq_index": "0",
+    "orf_regions": "1-6, 51-68",
+    "exclusion_regions": "1-6, 50-68"
+  }
+]
+```
+
+```bash
+eso-optimize --input-folder path/to/fasta_files --indexes-file indexes.json
+```
+
+- `file` is the FASTA/GenBank file's stem (no extension, e.g. `"my_gene"` for
+  `my_gene.fasta`).
+- `seq_index` is which record within that file, 0-indexed in file order, as a string.
+- `orf_regions`/`exclusion_regions` are 1-indexed, inclusive region strings (e.g.
+  `"1-6, 51-68"` for two separate regions); omit `exclusion_regions` (or use `""`) for no
+  exclusions.
+
+A malformed `--indexes-file` (bad JSON, missing `file`/`seq_index`) fails immediately with
+a plain-English message; malformed region strings themselves are validated the same way
+whether `indexes` came from a file or was passed directly to `eso.pipeline.main`/`main`.
+
+From Python, pass the equivalent dict directly:
+
+```python
+from eso import main
+
+message, results = main(
+    input_folder="path/to/fasta_files",
+    indexes={("my_gene", "0"): ("1-6, 51-68", "1-6, 50-68")},
+)
+```
+
 ## Motif sources: methylation, cryptic ribosome binding, cryptic promoters, and your own
 
 Motif detection (`--compute-motifs`) isn't only about methylation - the same PSSM-based

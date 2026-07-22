@@ -11,7 +11,9 @@ a confusing, unrelated GC-limit error message.
 import gzip
 import os
 
-from eso.io_utils import file_opener, relevant_file_paths
+import pytest
+
+from eso.io_utils import IndexesFileError, file_opener, load_indexes_from_file, relevant_file_paths
 from eso.io_utils import test_input as validate_input
 
 
@@ -144,3 +146,55 @@ def test_opens_multi_record_fasta_file(tmp_path):
     records = file_opener((str(file_path), 'fasta'))
 
     assert [str(r.seq) for r in records] == ['ACGT', 'TTTT']
+
+
+# --- load_indexes_from_file ------------------------------------------------
+
+def test_load_indexes_from_file_builds_the_expected_dict(tmp_path):
+    file_path = tmp_path / 'indexes.json'
+    file_path.write_text(
+        '[{"file": "my_gene", "seq_index": "0", "orf_regions": "1-6, 51-68", '
+        '"exclusion_regions": "1-6, 50-68"}]'
+    )
+
+    indexes = load_indexes_from_file(str(file_path))
+
+    assert indexes == {("my_gene", "0"): ("1-6, 51-68", "1-6, 50-68")}
+
+
+def test_load_indexes_from_file_defaults_missing_exclusion_regions_to_empty(tmp_path):
+    file_path = tmp_path / 'indexes.json'
+    file_path.write_text('[{"file": "my_gene", "seq_index": "0", "orf_regions": "1-6"}]')
+
+    indexes = load_indexes_from_file(str(file_path))
+
+    assert indexes == {("my_gene", "0"): ("1-6", "")}
+
+
+def test_load_indexes_from_file_missing_file_raises_friendly_error(tmp_path):
+    with pytest.raises(IndexesFileError, match="Can't find the indexes file"):
+        load_indexes_from_file(str(tmp_path / 'does_not_exist.json'))
+
+
+def test_load_indexes_from_file_invalid_json_raises_friendly_error(tmp_path):
+    file_path = tmp_path / 'indexes.json'
+    file_path.write_text('{not valid json')
+
+    with pytest.raises(IndexesFileError, match="isn't valid JSON"):
+        load_indexes_from_file(str(file_path))
+
+
+def test_load_indexes_from_file_non_list_raises_friendly_error(tmp_path):
+    file_path = tmp_path / 'indexes.json'
+    file_path.write_text('{"file": "my_gene"}')
+
+    with pytest.raises(IndexesFileError, match="must contain a JSON list"):
+        load_indexes_from_file(str(file_path))
+
+
+def test_load_indexes_from_file_entry_missing_required_key_raises_friendly_error(tmp_path):
+    file_path = tmp_path / 'indexes.json'
+    file_path.write_text('[{"file": "my_gene"}]')
+
+    with pytest.raises(IndexesFileError, match='"file" and "seq_index" keys'):
+        load_indexes_from_file(str(file_path))
