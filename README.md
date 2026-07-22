@@ -12,6 +12,84 @@ route around them while it optimizes, using the empirical mutation-rate model fr
 [EFM Calculator](https://doi.org/10.1021/acssynbio.5b00068) (Jack et al., 2015, ACS
 Synthetic Biology).
 
+## Quickstart
+
+**1. Requirements**: Python 3.11 or newer. Check what you have installed:
+
+```bash
+python --version
+```
+
+If that prints something below `Python 3.11`, or fails with "command not found"/"not
+recognized", install a current version from [python.org/downloads](https://www.python.org/downloads/)
+first (the installer's default settings are fine) before continuing.
+
+**2. Install ESO.** In a terminal, `cd` into this folder (the one this README is in), then:
+
+```bash
+pip install .
+```
+
+This can take a minute or two the first time. If it ends with a line that doesn't contain
+the word `error`, it worked - skip to step 3. If you do see an error, check
+[Troubleshooting](#troubleshooting) below before asking for help.
+
+**3. Try it on a real sequence.** Put a FASTA file (a plain text file starting with a `>`
+line, then the DNA sequence) in a folder by itself, e.g. `my_sequences/gene.fasta`
+containing:
+
+```
+>my_gene
+ATGGCTGCTGCTGCTGCTGCTGCTGCTGCTGCTGCTGCTGCTGCTGCTGCTTAA
+```
+
+Then run:
+
+```bash
+eso-optimize --input-folder my_sequences --output-path my_results
+```
+
+**4. Check the result.** Look inside `my_results/gene/` - `final_sequence.txt` has the
+optimized sequence, `recombination_sites.csv`/`slippage_sites.csv` list what was detected
+and fixed. If the very last line printed to the terminal was `Success!`, it worked.
+
+That's the whole loop. Everything below this point is reference material for going
+further (different host organisms, custom scoring, locking regions from editing, and so
+on) - not required to get a first result.
+
+## Troubleshooting
+
+- **`'eso-optimize' is not recognized` / `command not found: eso-optimize`** (common on
+  Windows right after a fresh install): the command was installed, but its folder isn't on
+  your terminal's PATH yet. Use this instead - it always works, no PATH needed:
+
+  ```bash
+  python -m eso.cli --input-folder my_sequences --output-path my_results
+  ```
+
+  (Every `eso-optimize ...` example in this README works identically as
+  `python -m eso.cli ...`.)
+- **An error mentioning `Microsoft Visual Studio`, `CMake`, or "failed building wheel"
+  during `pip install .`**: this means `pip` tried to compile a dependency from source
+  instead of using a prebuilt version - almost always fixed by upgrading pip first
+  (`python -m pip install --upgrade pip`) and trying the install again, since an older
+  `pip` can miss prebuilt wheels that a newer one finds.
+- **`ModuleNotFoundError` or `ImportError` right after install**: double check you're
+  running `python`/`eso-optimize` from the *same* Python installation you ran
+  `pip install .` with. If you're not sure, run
+  `python -m pip show eso` - if that fails, you installed into a different Python than the
+  one you're now running.
+- **"No such file or directory" for your input folder**: `--input-folder` is relative to
+  wherever your terminal's current directory is - either `cd` there first, or use a full
+  path (e.g. `C:\Users\you\my_sequences` or `/Users/you/my_sequences`).
+- **Nothing in the output folder / an empty `results` list**: ESO looks for files ending
+  in `.fasta`/`.fna`/`.ffn`/`.faa`/`.frn`/`.fa`/`.gb`/`.gbk`/`.genbank` (optionally
+  gzipped), directly inside `--input-folder` or one level under it - check your file's
+  extension matches one of those.
+- Anything else: the error messages this tool prints are meant to be read directly and
+  acted on (not just a Python traceback to decode) - if one isn't clear, that's a bug in
+  the tool itself, worth reporting rather than working around.
+
 ## What it detects
 
 - **Replication slippage** - short tandem repeats (a base unit of length 1-15 repeated

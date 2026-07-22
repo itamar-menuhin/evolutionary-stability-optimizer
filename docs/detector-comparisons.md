@@ -1141,3 +1141,59 @@ bundled antibody example (`examples/antibody_optimization/run_example.py`)
 runs successfully, and the full test suite passes (158 passed, 1 skipped -
 the skip is the optional `docx-report` test, expected since `python-docx`
 isn't installed by the base install).
+
+## Two genuine cross-platform bugs (Mac/Linux), found via targeted audit
+
+Everything up to this point had only ever been tested on Windows. Ahead of
+handing the repo to a colleague on an unknown OS, an audit specifically for
+Windows-only assumptions across `eso/` found two real, reachable bugs (no
+hardcoded path separators, no `os.system`/`subprocess`, no Windows-only env
+vars/registry access, and no hardcoded line-ending assumptions - those were
+all already fine).
+
+**File discovery silently dropped uppercase/mixed-case files on Mac/Linux.**
+`eso.io_utils.relevant_file_paths` matched files via
+`glob('*.fasta')`-style patterns against lowercase-only extensions in
+`FILE_ENDINGS`. `glob`'s case sensitivity is filesystem-dependent, not
+Python-version-dependent: Windows' default NTFS/FAT filesystems are
+case-insensitive, so `glob('*.fasta')` there also matches `GENE.FASTA` -
+but the identical call on a Mac/Linux (case-sensitive) filesystem does
+*not*. Confirmed directly: a file named `GENE.FASTA` was found on this
+(Windows) machine, and there is no "0 files found" check anywhere in
+`pipeline.main`/`test_input`, so on Mac/Linux this would have been silent
+data loss - the pipeline runs, reports `'Success!'`, and simply never
+touches the file, with no error or warning. Fixed by rewriting
+`relevant_file_paths` to enumerate directory entries directly and match
+extensions case-insensitively in Python (`_matching_filetype`), rather than
+relying on the filesystem's own case-folding behavior - verified directly
+that `GENE.FASTA`, `Mixed.Fa`, and a nested `NESTED.GBK` are all now found,
+and added a regression test.
+
+**Missing explicit `encoding=` on several `open()` calls.** FASTA/GenBank
+files (`file_opener`), `--indexes-file` JSON, `--motifs-path` MEME files,
+`final_sequence.txt` output, and the bundled codon-usage CSVs were all
+opened without `encoding=`, meaning Python falls back to
+`locale.getpreferredencoding()` - `cp1252` by default on Windows, `utf-8`
+almost everywhere else. GenBank records in particular routinely carry
+non-ASCII metadata (accented author/species names in `DEFINITION`/`SOURCE`
+lines, "µ", "°", etc.), so a file saved as UTF-8 (the near-universal
+default outside Windows) and then read on Windows without an explicit
+encoding - or the reverse - risks a `UnicodeDecodeError` or silently
+mis-decoded characters. This is the same bug class already hit and fixed
+once before in this session's own diagnostic scripts (see the DNAChisel
+crash-investigation section above), just never swept across the actual
+package source until now. Fixed by adding `encoding="utf-8"` to every
+`open()`/`gzip.open()` call in the package (`io_utils.py`, `pipeline.py`,
+`codon_usage.py`, `detection/methylation.py`) - no test added for this one
+specifically (it would require actually exercising a non-UTF-8-locale
+environment to observe the original failure), but it's a mechanical,
+low-risk change and the existing suite continues to pass unchanged.
+
+Also added to the README: an explicit "Quickstart" section at the very top
+(exact prerequisites, one canonical install command, a copy-pasteable
+first run, how to read the result) and a "Troubleshooting" section for the
+most likely first-run failure modes (`eso-optimize` not found → use
+`python -m eso.cli` instead; a Visual-Studio/CMake build error → upgrade
+pip; wrong Python for the install; empty results). Previously, install and
+usage instructions were split across several sections and assumed the
+reader already knew what `poetry`, a virtualenv, or a CLI flag was.
