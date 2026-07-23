@@ -1293,3 +1293,100 @@ score decomposes, and a function that errors on the synthetic test chunks
 (e.g. one requiring a specific real sequence length) is silently skipped
 rather than breaking construction. 3 new tests in `tests/test_custom_score.py`
 (172 passed total, up from 169).
+
+### That check reverted: it false-positives on the exact audience it was meant to help
+
+Directly challenged on whether the automatic check above was a real fix or
+just relocated the problem: it is unreliable specifically for someone with
+a genuine codon-based metric (the audience a direct follow-up question was
+about). Confirmed directly: a plain per-codon lookup table
+(`CODON_WEIGHTS.get(codon, 1)`) - completely correct, genuinely additive,
+exactly the kind of function `window=3` is *for* - triggered a false "not
+additive" warning. Root cause: the check called `score_fn` on a
+double-length (2×window) test string to compare against two separate
+window-length calls, but a function written to only ever receive exactly
+`window` characters (a normal, correct design) has no defined behavior on a
+longer input at all - `.get()`'s dict fallback silently returns a default
+for the unrecognized "codon," and the check misread that mismatch as a
+real bug. There is no way to test "does summing per-window scores equal the
+true global score" without either (a) calling `score_fn` outside the
+domain it was designed for (false positives, as above) or (b) having an
+independent global-mode implementation of the same score to compare
+against (which doesn't exist when someone writes a windowed-only
+function). Reverted `_check_decomposability` entirely and its 3 tests;
+kept the ORF-scoping and remainder-truncation fixes from the previous
+entry, which don't have this problem. README/template docs reworded to
+state plainly that this can't be auto-detected - it's on the author to
+know their score decomposes, with `WINDOW = None` always safe as a
+fallback. 169 tests (down from 172, the 3 reverted).
+
+## eso.custom_score - WINDOW is not reliably a speed optimization
+
+Directly investigating the same follow-up question above (can someone with
+a genuine per-codon metric get "the faster codon pathway") led to
+discovering something significantly more consequential than the
+decomposability check: **windowed mode is not reliably faster than global
+mode, and can be dramatically slower**, contradicting what both this
+codebase's and DNAChisel's own documentation claim.
+
+Confirmed directly, not assumed: benchmarked `optimization_engine` with a
+genuinely additive per-codon lookup-table score across sequences from 50 to
+500 codons. Windowed mode was consistently *slower* than global mode, and
+the gap widened with sequence length (0.31x, 0.11x, then 0.06x the speed of
+global mode at 50/200/500 codons respectively - i.e. getting relatively
+*worse*, not better, exactly backwards from the documented expectation).
+With an artificially expensive `score_fn` (a 0.5ms `time.sleep`, simulating
+a real model's inference cost - precisely the scenario windowed mode is
+supposed to help with), windowed mode took 3.36s vs. global mode's 0.06s on
+a 30-codon test - 56x slower, not faster.
+
+**Root cause, traced directly through DNAChisel's own `optimize_objective`
+source** (not assumed): counting actual `score_fn` calls showed windowed
+mode making ~187,000 calls for a 200-codon sequence vs. global mode's ~100 -
+roughly 400x more calls per codon. DNAChisel's `optimize_objective` reads
+`objective.evaluate(problem).locations` once, then for each location builds
+a small "local problem" and either exhaustively or randomly searches its
+mutation space (`optimize_by_exhaustive_search`/`optimize_by_random_mutations`,
+chosen by comparing the local mutation space's size against
+`randomization_threshold`, default 10,000). `CustomScore.evaluate()` always
+returns the *entire* scored region as a single combined location
+(`locations=[self.location]`), so DNAChisel treats the whole ORF as one
+"local problem" whose combinatorial mutation space is far larger than
+`randomization_threshold`, falling into `optimize_by_random_mutations` with
+`max_random_iters` (default 1000) random trial mutations across the *whole*
+region - each requiring re-evaluating the objective - rather than many
+small, cheap, exhaustive per-codon searches (which is what the built-in
+`CodonOptimize`, timed at a comparable 0.377s to windowed `CustomScore` on
+the same sequence, appears to do internally).
+
+**A targeted fix was attempted and did not work.** Prototyped a version of
+`CustomScore.evaluate()` that reports one small location per window instead
+of one combined span, hypothesizing this would let DNAChisel's outer loop
+iterate over many small, cheap, exhaustively-searchable per-codon
+"local problems" instead of one enormous randomly-searched one. This did
+reduce total `score_fn` calls substantially (187,000 → 26,000, roughly 7x
+fewer, on the 200-codon cheap-`score_fn` case) - but wall-clock time barely
+changed (0.433s → 0.476s for the cheap case; 3.36s → 3.54s for the
+expensive-`score_fn` case, i.e. no improvement at all where it would matter
+most). This means the real bottleneck is not simply "one big location vs.
+many small ones" - something deeper in DNAChisel's per-location
+optimization loop (possibly related to how `localized()`'s window-extension
+interacts with the local mutation space, or `optimize_by_random_mutations`
+itself, or per-location bookkeeping overhead unrelated to `score_fn` call
+count) remains the actual bottleneck, and wasn't identified within the time
+budget available for this investigation.
+
+**Current state, left genuinely open rather than papered over:** the
+`WINDOW` setting is documented (README, `CustomScore`'s own docstring and
+runtime warning, `examples/custom_score_template.py`) purely as a
+*correctness* choice (does your score genuinely decompose as a sum over
+fixed-size chunks) with an explicit, evidence-backed statement that it is
+not a reliable speed choice - anyone optimizing for speed is told to
+benchmark their own case rather than trust either mode's reputation. This
+appears to be a property of DNAChisel's current optimization algorithm
+(version 3.2.16) rather than a bug introduced in this codebase's
+`CustomScore` wrapper, but that's based on the evidence gathered here, not
+a confirmed diagnosis from DNAChisel's own maintainers or changelog - a
+genuine follow-up would mean either reporting this upstream to DNAChisel,
+or a much deeper dive into `optimize_by_random_mutations` and
+`DnaOptimizationProblem`'s per-location bookkeeping than was done here.

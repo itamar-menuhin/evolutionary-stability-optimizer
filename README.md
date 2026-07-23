@@ -230,7 +230,9 @@ it on its own if you only want the hotspot dataframes, with no optimization at a
 This composes directly with a custom scoring function - just pass `custom_score_fn=...`
 to `optimization_engine` instead of `organism_name`. **If you're plugging in your own
 model** (an ML model, or any function that scores the sequence as a whole rather than one
-codon at a time - true for most real models), leave `custom_score_window` unset:
+codon at a time - true for most real models), leave `custom_score_window` unset - this
+isn't even necessarily a speed trade-off in practice (see the measured reality further
+down):
 
 ```python
 final_seq, _, num_edits = optimization_engine(
@@ -247,16 +249,18 @@ works. Passing a window when that assumption doesn't hold isn't just "a bit less
 accurate" - it silently computes something structurally unrelated to your real score
 (confirmed directly: a model rewarding the sequence for containing a long repeated run
 anywhere scored a real 9-nucleotide run as `9` in the correct, unwindowed mode, but as
-`15` - a meaningless sum of per-codon maxes - when a window was wrongly applied).
-**ESO automatically checks for this**: whenever a window is given, it empirically tests
-`score_fn(A) + score_fn(B)` against `score_fn(A + B)` on two synthetic chunks and warns
-immediately if they disagree, without needing your real sequence at all - but this is a
-spot-check, not a proof (a score could still pass on these two particular chunks and fail
-on your real data), so it's a backstop, not a substitute for actually knowing your score
-decomposes. The next section explains exactly when a window *is* safe to use (mostly:
-never, for an external model - it's really only for scores that are inherently per-codon,
-like the built-in codon-usage scoring itself) and the speed/correctness trade-off it's
-for.
+`15` - a meaningless sum of per-codon maxes - when a window was wrongly applied), with no
+error or warning at any point. There is deliberately no automatic check for this: the only
+way to test it would mean calling `score_fn` on inputs longer than one window, which is
+itself invalid for a function written to only ever receive exactly `window` characters
+(a normal, correct way to write a per-codon lookup table) - such a check would falsely
+flag exactly the legitimate case it's supposed to help (confirmed directly: a plain codon
+lookup table using `.get(codon, default)`, genuinely additive and completely correct with
+`window=3`, triggered a false "not additive" warning under an earlier version of this
+check that has since been removed for that reason). The next section explains exactly
+when a window *is* safe to use (mostly: never, for an external model - it's really only
+for scores that are inherently per-codon, like the built-in codon-usage scoring itself)
+and the speed/correctness trade-off it's for.
 
 See `optimization_engine`'s docstring (`eso/optimize.py`) for every parameter
 (`mini_gc`/`maxi_gc`, `orf_regions`/`exclusion_regions`, `method`, and so on) - everything
@@ -301,30 +305,43 @@ final_seq, _, _ = optimization_engine(
 )
 ```
 
-**The `WINDOW` setting** controls how `score_fn` gets called during optimization, and is
-the main thing to get right:
+**The `WINDOW` setting** controls how `score_fn` gets called during optimization:
 
 - **`WINDOW = 3`** (or any positive integer N) - "windowed" mode: `score_fn` is called on
   each successive, non-overlapping N-nt chunk of the sequence, and the results are summed.
-  Fast, because DNAChisel only has to re-score the chunks actually touched by a given trial
-  edit, not the whole sequence - this is the same mechanism CAI/tAI-style per-codon scoring
-  already uses (there, N=3). Only give a *correct* total score if your real score genuinely
-  decomposes as a sum over fixed-size chunks - it doesn't have to be codon-sized (N=3);
-  any fixed window size works, as long as that decomposition assumption holds. **If the
-  scored region's length isn't itself a multiple of N**, the trailing remainder is
-  silently excluded from every `score_fn` call (only whole windows are ever scored) - ESO
-  warns about this once per optimization run when it happens, so it won't pass silently.
-  This can't occur for the common case (N=3 against a translation-preserving ORF, which is
-  always a multiple of 3 already) - it's only reachable with an N that doesn't evenly
-  divide your scored region's length. **ESO also automatically spot-checks that
-  `score_fn` actually decomposes** the way windowed mode assumes (see above) and warns
-  immediately if it doesn't, on two synthetic test chunks - a useful backstop, but not a
-  substitute for knowing your score is genuinely per-chunk before choosing a window.
+  Only give a *correct* total score if your real score genuinely decomposes as a sum over
+  fixed-size chunks - it doesn't have to be codon-sized (N=3); any fixed window size works,
+  as long as that decomposition assumption holds. **If the scored region's length isn't
+  itself a multiple of N**, the trailing remainder is silently excluded from every
+  `score_fn` call (only whole windows are ever scored) - ESO warns about this once per
+  optimization run when it happens, so it won't pass silently. This can't occur for the
+  common case (N=3 against a translation-preserving ORF, which is always a multiple of 3
+  already) - it's only reachable with an N that doesn't evenly divide your scored region's
+  length.
 - **`WINDOW = None`** (the default if omitted) - "global" mode: `score_fn` is called once
   on the entire sequence, from scratch, on *every* trial mutation during optimization.
-  Always correct, no assumption about how the score decomposes, but can be very slow on
-  long sequences or an expensive `score_fn` - a warning is raised when this mode is used,
-  for exactly that reason.
+  Always correct, no assumption about how the score decomposes.
+
+**`WINDOW` is not reliably a speed optimization - measure your own case rather than
+assuming windowed mode is faster.** The intuitive story ("DNAChisel only re-scores the
+codons actually touched by a trial edit, not the whole sequence") describes the *per-call*
+cost correctly, but doesn't hold up in wall-clock terms: confirmed directly, across
+sequences from 50 to 500 codons and with both a cheap and an artificially-expensive (0.5ms
+per call, simulating a real model) `score_fn`, windowed mode was consistently *slower* than
+global mode - in the expensive-`score_fn` case, 56x slower (3.36s vs. 0.06s on a 30-codon
+test), not faster. Root cause (traced directly, not assumed): DNAChisel's own
+`optimize()` runs a much more exhaustive local search when an objective is localizable
+(windowed `CustomScore`, and the built-in `CodonOptimize`) than when it isn't (global
+`CustomScore`) - in the cases measured, this meant roughly 400x more total `score_fn`
+calls in windowed mode, which dominates over any per-call savings unless `score_fn` is
+close to free. This appears to be a property of DNAChisel's current optimization
+algorithm itself (version 3.2.16) rather than something wrong in ESO's `CustomScore`
+wrapper - a targeted attempt to fix it (reporting many small per-window locations from
+`evaluate()` instead of one combined span, closer to what `CodonOptimize` likely does
+internally) did not resolve the slowdown, so the actual root cause inside DNAChisel's
+search loop remains unidentified. If you're choosing `WINDOW` for a real `score_fn`,
+benchmark both modes on a realistic sequence length first - don't default to assuming a
+window makes things faster.
 
 Independently of `WINDOW`, `custom_score_minimize=True` (`--custom-score-minimize` on the
 CLI) treats a *lower* `score_fn` value as better, instead of higher.

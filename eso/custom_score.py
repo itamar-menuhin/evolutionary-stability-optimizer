@@ -16,55 +16,6 @@ import dnachisel
 _VALIDATION_TEST_SEQUENCE = "ATGATGATGATGATGATGATGATGATGATG"  # 30nt, multiple of 3
 
 
-def _check_decomposability(score_fn, window):
-    """Empirically check whether `score_fn` is additive over concatenation -
-    score_fn(A) + score_fn(B) == score_fn(A + B) - which is exactly the
-    property windowed mode assumes (it sums independent per-window calls
-    instead of ever seeing the whole scored region at once). This is a
-    NECESSARY-but-not-sufficient check (it can't prove additivity for every
-    possible input, only disprove it on these two test chunks), but it
-    directly catches the common, consequential failure mode: a score with any
-    cross-chunk dependency (the shape of most real external/ML models) gets
-    silently summed across chunks in windowed mode, computing something
-    structurally unrelated to the intended score. Confirmed directly: a
-    "reward the sequence for containing a long repeated run anywhere" score
-    (global by nature) scores a real 9nt run as 9 correctly without a window,
-    but as 15 - a meaningless sum of per-window maxes - when windowed; this
-    check catches exactly that case on two dissimilar synthetic test chunks,
-    without needing the user's real sequence at all.
-
-    Silently skips the check (does not warn) if `score_fn` itself raises on
-    these synthetic test chunks - that's a separate concern (the function may
-    only be meaningful on real biological sequences of a specific length),
-    not what this check is for.
-    """
-    chunk_a = ("ATCG" * window)[:window]
-    chunk_b = ("GCTA" * window)[:window]
-    try:
-        windowed_sum = score_fn(chunk_a) + score_fn(chunk_b)
-        combined = score_fn(chunk_a + chunk_b)
-    except Exception:
-        return
-    if windowed_sum != combined:
-        warnings.warn(
-            f"CustomScore's score_fn does not appear to be additive over "
-            f"concatenation: score_fn(A) + score_fn(B) = {windowed_sum!r}, but "
-            f"score_fn(A + B) = {combined!r}, for two dissimilar {window}nt test "
-            f"chunks. Windowed mode (window={window}) sums independent "
-            f"per-chunk scores, which only equals the true whole-region score "
-            f"if score_fn has no dependence on context beyond a single chunk "
-            f"(the way per-codon CAI/tAI scoring does) - if it does (most "
-            f"external/ML models score more than one chunk's worth of context "
-            f"at once), windowed mode will silently optimize toward a "
-            f"different, structurally unrelated quantity than the one you "
-            f"actually intended, with no further warning once optimization "
-            f"starts. If your score needs to see more than {window}nt at once "
-            f"to make sense, use window=None instead (always correct, but "
-            f"slower).",
-            stacklevel=3,
-        )
-
-
 class CustomScore(dnachisel.Specification):
     """DNAChisel objective that maximizes an arbitrary Python function of the
     sequence, instead of a codon-usage table.
@@ -75,17 +26,20 @@ class CustomScore(dnachisel.Specification):
       non-overlapping N-nt chunk of the sequence and the results are summed.
       Only correct if your true score genuinely decomposes as a sum over
       fixed-size windows (this is what CAI/tAI-style per-codon scoring does -
-      e.g. N=3 for a per-codon function). In exchange, this is fast: DNAChisel
-      only re-evaluates the windows touched by a given trial mutation
-      (see `localized()` below), not the whole sequence, on every step.
+      e.g. N=3 for a per-codon function). NOT reliably faster in wall-clock
+      terms than global mode, despite each individual call being cheaper -
+      confirmed directly that DNAChisel's own optimize() runs a much more
+      exhaustive search for a localizable objective than a non-localizable
+      one (~400x more score_fn calls measured in one case), which can easily
+      dominate any per-call savings. Benchmark your own case; don't assume
+      this is the fast path.
 
     - **global** (`window=None`, the default): `score_fn` is called once on
       the whole sequence (or `location`, if given). Always correct - no
-      assumption about how the score decomposes - but every trial mutation
-      during `problem.optimize()` re-evaluates the entire sequence from
-      scratch, since a global score can't be localized. This can be very
-      slow for long sequences or an expensive `score_fn`; a warning is
-      raised at construction time to make this cost explicit up front.
+      assumption about how the score decomposes. Can be slow for an
+      expensive `score_fn` since it's re-evaluated on every trial mutation,
+      but empirically this is not a reliable predictor of which mode is
+      actually faster overall - see above.
 
     Parameters
     ----------
@@ -115,15 +69,13 @@ class CustomScore(dnachisel.Specification):
             warnings.warn(
                 "CustomScore is running in global mode (no `window` given): "
                 "score_fn will be re-evaluated on the full sequence for "
-                "every trial mutation during optimize(), which can be very "
-                "slow on long sequences or an expensive score_fn. If your "
-                "score can be computed as a sum over fixed-size windows "
-                "(like per-codon scoring), pass `window=N` for a much "
-                "faster, localized evaluation.",
+                "every trial mutation during optimize(). If your score can "
+                "be computed as a sum over fixed-size windows (like "
+                "per-codon scoring), `window=N` is available, but is NOT "
+                "reliably faster in practice - benchmark both before "
+                "switching (see this class's docstring).",
                 stacklevel=2,
             )
-        else:
-            _check_decomposability(score_fn, window)
 
     def initialized_on_problem(self, problem, role=None):
         initialized = self._copy_with_full_span_if_no_location(problem)

@@ -16,18 +16,24 @@ WINDOW: "per-codon" vs "whole sequence"
 ----------------------------------------
 Leave WINDOW = 3 below if your score only needs to look at 3 letters
 (one codon) at a time to decide how good that piece is - this is how the
-built-in CAI/tAI scoring works, and it's FAST, because the optimizer only
-has to re-check the codons it actually changed.
+built-in CAI/tAI scoring works.
 
 If your score genuinely needs to look at the WHOLE gene at once to make
 sense (e.g. it depends on some property of the entire sequence, not just
-one codon), set WINDOW = None instead. This always works, but is much
-SLOWER, because the optimizer has to recompute your score for the entire
-sequence every single time it tries a change, however small.
+one codon), set WINDOW = None instead.
 
-If you're not sure which applies to you: if you can imagine writing your
-score by looking at 3 letters at a time and adding up the results, use
-WINDOW = 3. If you can't, use WINDOW = None.
+This is a CORRECTNESS choice, not (reliably) a speed choice - don't assume
+WINDOW = 3 is "the fast one." Confirmed directly: DNAChisel's own optimizer
+can end up calling your score function far MORE times in windowed mode than
+in whole-sequence mode, to the point that windowed mode measured 56x SLOWER
+in one real test. If you're choosing WINDOW to make things faster, benchmark
+both settings on your actual sequence first.
+
+The only thing that matters for choosing WINDOW is whether your score is
+CORRECT when computed this way: if you can imagine writing your score by
+looking at 3 letters at a time and adding up the results, and that sum truly
+equals what you'd compute by looking at the whole gene at once, use
+WINDOW = 3. If you can't, use WINDOW = None - it's always correct.
 
 Your score only ever sees the coding region(s) (ORF) being optimized, never
 any flanking sequence outside them (e.g. a UTR) - same as the built-in
@@ -37,17 +43,15 @@ passed to this function at all) - ESO will warn you if this happens, though
 it can't happen for the default WINDOW = 3 case, since a coding region's
 length is always a multiple of 3 already.
 
-If you set WINDOW to a number, ESO also automatically checks whether your
-score actually behaves the way windowed mode assumes (looking at each piece
-independently and adding up the results) and warns you immediately if it
-doesn't look right - but this is just a quick sanity check, not a guarantee,
-so if your score needs any context beyond a single WINDOW-sized piece to
-make sense, use WINDOW = None instead of hoping this check would have
-caught it.
+There's no automatic way for ESO to check whether your score genuinely
+decomposes this way - it's on you to know. If you're not sure, WINDOW = None
+is always correct (just slower); only reach for a WINDOW value once you're
+confident your score really is a sum of independent per-piece contributions.
 """
 
-WINDOW = 3  # 3 = score is computed per-codon and added up (fast).
-            # None = score is computed on the whole sequence at once (slower).
+WINDOW = 3  # 3 = score is computed per-codon and added up.
+            # None = score is computed on the whole sequence at once.
+            # (This is about correctness, not speed - see above.)
 
 
 def score(seq):
