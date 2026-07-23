@@ -36,6 +36,14 @@ scored, the leftover few letters at the end are silently skipped (never
 passed to this function at all) - ESO will warn you if this happens, though
 it can't happen for the default WINDOW = 3 case, since a coding region's
 length is always a multiple of 3 already.
+
+If you set WINDOW to a number, ESO also automatically checks whether your
+score actually behaves the way windowed mode assumes (looking at each piece
+independently and adding up the results) and warns you immediately if it
+doesn't look right - but this is just a quick sanity check, not a guarantee,
+so if your score needs any context beyond a single WINDOW-sized piece to
+make sense, use WINDOW = None instead of hoping this check would have
+caught it.
 """
 
 WINDOW = 3  # 3 = score is computed per-codon and added up (fast).

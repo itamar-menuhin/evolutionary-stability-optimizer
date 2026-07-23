@@ -1269,13 +1269,27 @@ warning at any point, since there's no way for the code to know the
 window choice was semantically wrong (unlike the remainder-truncation
 case above, which is at least mechanically detectable).
 
-Fixed by rewriting the library section's example to lead with the safe
-default for an external model (omit `custom_score_window` entirely -
+First fixed by rewriting the library section's example to lead with the
+safe default for an external model (omit `custom_score_window` entirely -
 correct always, if slower) and moving the windowed variant to an
-explicitly-flagged, opt-in case with the concrete 9-vs-15 evidence
-inline, plus a matching inline comment on the "Scoring sequences your own
-way" section's own windowed example ("only correct because THIS score
-really is per-codon - see below") for anyone who reads that section
-directly instead. No code changes - this was purely a case of the
-mechanically-easiest-to-copy example being the semantically wrong default
-for the audience most likely to reach for it first.
+explicitly-flagged, opt-in case with the concrete 9-vs-15 evidence inline,
+plus a matching inline comment on the "Scoring sequences your own way"
+section's own windowed example. But a fair, direct challenge followed:
+documentation can only help someone who reads it - it doesn't stop the
+mistake at the code level, which is where a bug like this should actually
+be caught. Fixed properly by adding `_check_decomposability` to
+`eso/custom_score.py`, called automatically whenever `CustomScore` is
+constructed with a `window`: it empirically tests `score_fn(A) +
+score_fn(B)` against `score_fn(A + B)` on two dissimilar synthetic test
+chunks (no real sequence needed) and warns immediately if they disagree.
+Verified this actually catches the exact case above (the homopolymer-run
+"model": warns, with the concrete 2-vs-1 mismatch on the test chunks
+shown in the message) while not false-positiving on the genuinely
+additive GC-count case, through both the direct Python API and the real
+`--custom-score-file` CLI path. This is a NECESSARY-not-sufficient check
+(passing it on two synthetic chunks doesn't prove additivity for every
+real input) - documented as a backstop, not a substitute for knowing your
+score decomposes, and a function that errors on the synthetic test chunks
+(e.g. one requiring a specific real sequence length) is silently skipped
+rather than breaking construction. 3 new tests in `tests/test_custom_score.py`
+(172 passed total, up from 169).

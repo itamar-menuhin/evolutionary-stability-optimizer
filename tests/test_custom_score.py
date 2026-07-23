@@ -80,6 +80,51 @@ def test_windowed_mode_no_warning_when_region_length_is_a_multiple_of_window():
         spec.initialized_on_problem(problem)
 
 
+def _homopolymer_bonus(seq):
+    # a deliberately non-additive-over-concatenation score: the longest run of
+    # a single repeated character anywhere in seq. Two chunks each with a
+    # short run can combine into one long run across the boundary (or vice
+    # versa) - summing per-chunk results is structurally different from the
+    # true whole-sequence answer, the same shape as many real external/ML
+    # models (which see more than one fixed-size chunk's worth of context).
+    best = 1
+    run = 1
+    for i in range(1, len(seq)):
+        run = run + 1 if seq[i] == seq[i - 1] else 1
+        best = max(best, run)
+    return best
+
+
+def test_windowed_mode_warns_when_score_fn_is_not_additive_over_concatenation():
+    # regression test: this exact case (global-shaped score, windowed mode)
+    # silently computed 15 (a meaningless sum of per-codon maxes) instead of
+    # the true 9 for a real 9nt homopolymer run, with no warning at all,
+    # before this check existed.
+    with pytest.warns(UserWarning, match="does not appear to be additive"):
+        CustomScore(_homopolymer_bonus, window=3)
+
+
+def test_windowed_mode_no_additivity_warning_for_a_genuinely_additive_score():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        CustomScore(_gc_count, window=3)
+
+
+def test_additivity_check_is_skipped_not_raised_when_score_fn_errors_on_test_chunks():
+    # a score_fn that can't handle the synthetic test chunks at all (e.g. it
+    # requires a specific real biological length/format) shouldn't crash
+    # CustomScore construction just because this sanity check couldn't run -
+    # that's a separate concern from what this check is for.
+    def picky_score(seq):
+        if len(seq) != 12:
+            raise ValueError("only works on exactly 12nt")
+        return 0
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        CustomScore(picky_score, window=3)  # must not raise or warn
+
+
 def test_windowed_mode_localized_restricts_to_nearby_windows():
     spec = CustomScore(_gc_count, window=3)
     seq = "A" * 300

@@ -16,6 +16,55 @@ import dnachisel
 _VALIDATION_TEST_SEQUENCE = "ATGATGATGATGATGATGATGATGATGATG"  # 30nt, multiple of 3
 
 
+def _check_decomposability(score_fn, window):
+    """Empirically check whether `score_fn` is additive over concatenation -
+    score_fn(A) + score_fn(B) == score_fn(A + B) - which is exactly the
+    property windowed mode assumes (it sums independent per-window calls
+    instead of ever seeing the whole scored region at once). This is a
+    NECESSARY-but-not-sufficient check (it can't prove additivity for every
+    possible input, only disprove it on these two test chunks), but it
+    directly catches the common, consequential failure mode: a score with any
+    cross-chunk dependency (the shape of most real external/ML models) gets
+    silently summed across chunks in windowed mode, computing something
+    structurally unrelated to the intended score. Confirmed directly: a
+    "reward the sequence for containing a long repeated run anywhere" score
+    (global by nature) scores a real 9nt run as 9 correctly without a window,
+    but as 15 - a meaningless sum of per-window maxes - when windowed; this
+    check catches exactly that case on two dissimilar synthetic test chunks,
+    without needing the user's real sequence at all.
+
+    Silently skips the check (does not warn) if `score_fn` itself raises on
+    these synthetic test chunks - that's a separate concern (the function may
+    only be meaningful on real biological sequences of a specific length),
+    not what this check is for.
+    """
+    chunk_a = ("ATCG" * window)[:window]
+    chunk_b = ("GCTA" * window)[:window]
+    try:
+        windowed_sum = score_fn(chunk_a) + score_fn(chunk_b)
+        combined = score_fn(chunk_a + chunk_b)
+    except Exception:
+        return
+    if windowed_sum != combined:
+        warnings.warn(
+            f"CustomScore's score_fn does not appear to be additive over "
+            f"concatenation: score_fn(A) + score_fn(B) = {windowed_sum!r}, but "
+            f"score_fn(A + B) = {combined!r}, for two dissimilar {window}nt test "
+            f"chunks. Windowed mode (window={window}) sums independent "
+            f"per-chunk scores, which only equals the true whole-region score "
+            f"if score_fn has no dependence on context beyond a single chunk "
+            f"(the way per-codon CAI/tAI scoring does) - if it does (most "
+            f"external/ML models score more than one chunk's worth of context "
+            f"at once), windowed mode will silently optimize toward a "
+            f"different, structurally unrelated quantity than the one you "
+            f"actually intended, with no further warning once optimization "
+            f"starts. If your score needs to see more than {window}nt at once "
+            f"to make sense, use window=None instead (always correct, but "
+            f"slower).",
+            stacklevel=3,
+        )
+
+
 class CustomScore(dnachisel.Specification):
     """DNAChisel objective that maximizes an arbitrary Python function of the
     sequence, instead of a codon-usage table.
@@ -73,6 +122,8 @@ class CustomScore(dnachisel.Specification):
                 "faster, localized evaluation.",
                 stacklevel=2,
             )
+        else:
+            _check_decomposability(score_fn, window)
 
     def initialized_on_problem(self, problem, role=None):
         initialized = self._copy_with_full_span_if_no_location(problem)

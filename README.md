@@ -247,11 +247,16 @@ works. Passing a window when that assumption doesn't hold isn't just "a bit less
 accurate" - it silently computes something structurally unrelated to your real score
 (confirmed directly: a model rewarding the sequence for containing a long repeated run
 anywhere scored a real 9-nucleotide run as `9` in the correct, unwindowed mode, but as
-`15` - a meaningless sum of per-codon maxes - when a window was wrongly applied), with no
-error or warning, since DNAChisel has no way to know your window choice was wrong. The
-next section explains exactly when a window *is* safe to use (mostly: never, for an
-external model - it's really only for scores that are inherently per-codon, like the
-built-in codon-usage scoring itself) and the speed/correctness trade-off it's for.
+`15` - a meaningless sum of per-codon maxes - when a window was wrongly applied).
+**ESO automatically checks for this**: whenever a window is given, it empirically tests
+`score_fn(A) + score_fn(B)` against `score_fn(A + B)` on two synthetic chunks and warns
+immediately if they disagree, without needing your real sequence at all - but this is a
+spot-check, not a proof (a score could still pass on these two particular chunks and fail
+on your real data), so it's a backstop, not a substitute for actually knowing your score
+decomposes. The next section explains exactly when a window *is* safe to use (mostly:
+never, for an external model - it's really only for scores that are inherently per-codon,
+like the built-in codon-usage scoring itself) and the speed/correctness trade-off it's
+for.
 
 See `optimization_engine`'s docstring (`eso/optimize.py`) for every parameter
 (`mini_gc`/`maxi_gc`, `orf_regions`/`exclusion_regions`, `method`, and so on) - everything
@@ -311,7 +316,10 @@ the main thing to get right:
   warns about this once per optimization run when it happens, so it won't pass silently.
   This can't occur for the common case (N=3 against a translation-preserving ORF, which is
   always a multiple of 3 already) - it's only reachable with an N that doesn't evenly
-  divide your scored region's length.
+  divide your scored region's length. **ESO also automatically spot-checks that
+  `score_fn` actually decomposes** the way windowed mode assumes (see above) and warns
+  immediately if it doesn't, on two synthetic test chunks - a useful backstop, but not a
+  substitute for knowing your score is genuinely per-chunk before choosing a window.
 - **`WINDOW = None`** (the default if omitted) - "global" mode: `score_fn` is called once
   on the entire sequence, from scratch, on *every* trial mutation during optimization.
   Always correct, no assumption about how the score decomposes, but can be very slow on
