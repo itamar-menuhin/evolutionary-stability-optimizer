@@ -65,10 +65,10 @@ def main(argv=None):
 
     common_motifs = [name.strip() for name in args.common_motifs.split(',')] if args.common_motifs else None
 
-    custom_score_fn, custom_score_window = None, None
+    custom_score_fn = None
     if args.custom_score_file is not None:
         try:
-            custom_score_fn, custom_score_window = load_custom_score_from_file(
+            custom_score_fn = load_custom_score_from_file(
                 args.custom_score_file, function_name=args.custom_score_function)
         except CustomScoreFileError as e:
             print(str(e), file=sys.stderr)
@@ -98,7 +98,6 @@ def main(argv=None):
         recombination_mode=args.recombination_mode,
         slippage_mode=args.slippage_mode,
         custom_score_fn=custom_score_fn,
-        custom_score_window=custom_score_window,
         custom_score_minimize=args.custom_score_minimize,
     )
     print(message)

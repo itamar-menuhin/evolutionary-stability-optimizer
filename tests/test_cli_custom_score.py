@@ -1,6 +1,6 @@
 """Tests that --custom-score-file is wired correctly through eso.cli.main:
 a bad file must fail fast with a friendly message (no pipeline run), and a
-good file's function/window must reach eso.pipeline.main unchanged.
+good file's function must reach eso.pipeline.main unchanged.
 """
 
 import eso.cli as cli
@@ -22,7 +22,7 @@ def test_bad_custom_score_file_fails_fast_with_friendly_message(tmp_path, capsys
 
 
 def test_good_custom_score_file_reaches_pipeline_main(tmp_path, monkeypatch):
-    file_path = _write(tmp_path, "good.py", "WINDOW = 3\ndef score(seq):\n    return seq.count('G')\n")
+    file_path = _write(tmp_path, "good.py", "def score(seq):\n    return seq.count('G')\n")
 
     captured = {}
 
@@ -35,7 +35,6 @@ def test_good_custom_score_file_reaches_pipeline_main(tmp_path, monkeypatch):
     exit_code = cli.main(['--custom-score-file', file_path, '--custom-score-minimize'])
 
     assert exit_code == 0
-    assert captured['custom_score_window'] == 3
     assert captured['custom_score_minimize'] is True
     assert captured['custom_score_fn']("GGG") == 3
 

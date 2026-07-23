@@ -20,34 +20,32 @@ class CustomScore(dnachisel.Specification):
     """DNAChisel objective that maximizes an arbitrary Python function of the
     sequence, instead of a codon-usage table.
 
-    Two modes, chosen by whether `window` is given:
+    `score_fn` is called once on the whole scored region (the full sequence,
+    or `location`, if given) on every trial mutation during `optimize()`.
+    This is always correct, with no assumption about how the score behaves.
 
-    - **windowed** (`window=N`): `score_fn` is called on each successive
-      non-overlapping N-nt chunk of the sequence and the results are summed.
-      Only correct if your true score genuinely decomposes as a sum over
-      fixed-size windows (this is what CAI/tAI-style per-codon scoring does -
-      e.g. N=3 for a per-codon function). NOT a dependable speed choice
-      either way - confirmed directly (with a score_fn valid to call in both
-      modes) that cheap score functions perform comparably in both modes, but
-      a score_fn with real per-call cost can make windowed mode meaningfully
-      *slower* than global mode, since DNAChisel's own optimize() calls
-      score_fn considerably more often when the objective is localizable.
-      Benchmark your own case; don't assume this is the fast path.
-
-    - **global** (`window=None`, the default): `score_fn` is called once on
-      the whole sequence (or `location`, if given). Always correct - no
-      assumption about how the score decomposes. See above - which mode is
-      actually faster depends on your specific score_fn, not on this choice
-      alone.
+    An earlier version of this class also supported a "windowed" mode
+    (calling score_fn per fixed-size chunk and summing), matching how the
+    built-in CAI/tAI codon-usage scoring works. It was removed: benchmarking
+    found no case where it was actually faster than this whole-sequence
+    approach (comparable at best, meaningfully slower at worst, since
+    DNAChisel's own optimizer ends up calling score_fn considerably more
+    often when the objective is chunk-localizable) - see
+    docs/detector-comparisons.md for the full investigation, including an
+    initial, incorrect benchmark that was itself corrected. Windowed mode
+    also carried a real, unpreventable correctness risk: a user-supplied
+    score_fn that doesn't genuinely decompose as a sum over independent
+    chunks (true of most real external/ML models) would silently compute a
+    different, structurally unrelated quantity, with no reliable way to
+    detect this automatically. Given it offered no confirmed benefit and a
+    real risk, it was removed rather than kept as an unverified "maybe
+    faster sometimes" option.
 
     Parameters
     ----------
     score_fn
         Callable taking a DNA sequence (str) and returning a float, higher is
         better (pass `minimize=True` if lower is better).
-    window
-        If given, enables windowed mode (see above) with this window size, in
-        nucleotides. If None (default), global mode is used.
     location
         Restrict the objective to a sub-region of the full sequence. Defaults
         to the whole sequence.
@@ -58,48 +56,23 @@ class CustomScore(dnachisel.Specification):
 
     best_possible_score = None
 
-    def __init__(self, score_fn, window=None, location=None, minimize=False, boost=1.0):
+    def __init__(self, score_fn, location=None, minimize=False, boost=1.0):
         self.score_fn = score_fn
-        self.window = window
         self.location = dnachisel.Location.from_data(location)
         self.minimize = minimize
         self.boost = boost
-        if window is None:
-            warnings.warn(
-                "CustomScore is running in global mode (no `window` given): "
-                "score_fn will be re-evaluated on the full sequence for "
-                "every trial mutation during optimize(). If your score can "
-                "be computed as a sum over fixed-size windows (like "
-                "per-codon scoring), `window=N` is available, but is NOT "
-                "reliably faster in practice - benchmark both before "
-                "switching (see this class's docstring).",
-                stacklevel=2,
-            )
+        warnings.warn(
+            "CustomScore re-evaluates score_fn on the full scored region for "
+            "every trial mutation during optimize(), which can be slow for "
+            "an expensive score_fn or a long sequence.",
+            stacklevel=2,
+        )
 
     def initialized_on_problem(self, problem, role=None):
-        initialized = self._copy_with_full_span_if_no_location(problem)
-        if self.window is not None:
-            span = initialized.location.end - initialized.location.start
-            remainder = span % self.window
-            if remainder:
-                warnings.warn(
-                    f"CustomScore's scored region is {span}nt, not a multiple of "
-                    f"window={self.window} - the last {remainder}nt of it will be "
-                    f"silently excluded from every score_fn call, since only whole "
-                    f"windows are scored. If this is meant to be per-codon scoring "
-                    f"(window=3), check that region's length is a multiple of 3.",
-                    stacklevel=2,
-                )
-        return initialized
+        return self._copy_with_full_span_if_no_location(problem)
 
     def _score_sequence(self, sequence):
-        if self.window is None:
-            score = self.score_fn(sequence)
-        else:
-            score = sum(
-                self.score_fn(sequence[start:start + self.window])
-                for start in range(0, len(sequence) - self.window + 1, self.window)
-            )
+        score = self.score_fn(sequence)
         return -score if self.minimize else score
 
     def evaluate(self, problem):
@@ -108,24 +81,18 @@ class CustomScore(dnachisel.Specification):
         return dnachisel.SpecEvaluation(self, problem, score, locations=[self.location])
 
     def localized(self, location, problem=None):
-        if self.window is None:
-            # A global score can't be restricted to a sub-region without
-            # changing its meaning - always re-evaluate the whole thing.
-            return self
-        extended_location = location.extended(self.window - 1)
-        new_location = self.location.overlap_region(extended_location)
-        if new_location is None:
-            return None
-        return self.copy_with_changes(location=new_location)
+        # The score can't be restricted to a sub-region without changing its
+        # meaning, so always re-evaluate the whole thing.
+        return self
 
     def label_parameters(self):
-        params = [("window", str(self.window) if self.window else "global")]
+        params = []
         if self.minimize:
             params.append(("minimize", "True"))
         return params
 
     def short_label(self):
-        return "custom score (%s)" % ("global" if self.window is None else f"window={self.window}")
+        return "custom score"
 
 
 class CustomScoreFileError(Exception):
@@ -138,20 +105,12 @@ class CustomScoreFileError(Exception):
     """
 
 
-def load_custom_score_from_file(file_path, function_name='score', window_variable='WINDOW'):
+def load_custom_score_from_file(file_path, function_name='score'):
     """Load a user-authored scoring function from a plain Python file.
 
-    The file is expected to define:
-    - a function named `function_name` (default: `score`) taking a DNA
-      sequence string and returning a number (higher = better).
-    - optionally, a module-level variable named `window_variable`
-      (default: `WINDOW`) set to either an integer (the function will be
-      called on each successive chunk of that many nucleotides and the
-      results summed - fast, use this if your score is naturally per-codon
-      or per-window) or `None` (the function is called once on the whole
-      sequence each time - always correct, but much slower to optimize).
-      If the file doesn't define `WINDOW` at all, `None` (whole-sequence
-      mode) is assumed.
+    The file is expected to define a function named `function_name`
+    (default: `score`) taking a DNA sequence string and returning a number
+    (higher = better).
 
     This is the mechanism behind `eso-optimize --custom-score-file`, and is
     also usable directly from Python. Validates the file eagerly (missing
@@ -161,7 +120,7 @@ def load_custom_score_from_file(file_path, function_name='score', window_variabl
 
     Returns
     -------
-    (score_fn, window)
+    score_fn
     """
     if not path.isfile(file_path):
         raise CustomScoreFileError(
@@ -192,30 +151,20 @@ def load_custom_score_from_file(file_path, function_name='score', window_variabl
             f"It needs to be defined with `def {function_name}(seq): ...`."
         )
 
-    window = getattr(module, window_variable, None)
-    if window is not None and (not isinstance(window, int) or window <= 0):
-        raise CustomScoreFileError(
-            f"'{window_variable}' in '{file_path}' should be a positive whole number "
-            f"(like 3) or `None`, not {window!r}.")
-
-    test_sequence = _VALIDATION_TEST_SEQUENCE if window is None else (
-        _VALIDATION_TEST_SEQUENCE[:window] if window <= len(_VALIDATION_TEST_SEQUENCE)
-        else _VALIDATION_TEST_SEQUENCE * (window // len(_VALIDATION_TEST_SEQUENCE) + 1)
-    )
     try:
-        result = score_fn(test_sequence)
+        result = score_fn(_VALIDATION_TEST_SEQUENCE)
     except Exception as e:
         raise CustomScoreFileError(
             f"Your `{function_name}` function raised an error when tested on the "
-            f"sequence '{test_sequence}': {e!r}. Please fix `{function_name}` in "
+            f"sequence '{_VALIDATION_TEST_SEQUENCE}': {e!r}. Please fix `{function_name}` in "
             f"'{file_path}' and try again."
         ) from e
 
     if not isinstance(result, (int, float)):
         raise CustomScoreFileError(
             f"Your `{function_name}` function returned a {type(result).__name__} "
-            f"({result!r}) instead of a number, when tested on '{test_sequence}'. "
+            f"({result!r}) instead of a number, when tested on '{_VALIDATION_TEST_SEQUENCE}'. "
             f"Make sure it ends with `return <a number>`."
         )
 
-    return score_fn, window
+    return score_fn

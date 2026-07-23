@@ -65,7 +65,7 @@ def _extract_cai(objectives_text_summary, num_codons):
 def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
             optimize, mini_gc, maxi_gc, method, organism_name, indexes,
             recombination_mode='thorough', slippage_mode='default', common_motifs=None,
-            custom_score_fn=None, custom_score_window=None, custom_score_minimize=False):
+            custom_score_fn=None, custom_score_minimize=False):
     """Run the two-pass optimization (CAI/GC only, then + hotspot avoidance) over
     every sequence record in `data`, and write out CSVs + a Word report to
     `output_path/<file_stem>/`.
@@ -100,7 +100,7 @@ def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
         if optimize:
             curr_seq, obj_description, _ = optimization_engine(
                 curr_seq, mini_gc=mini_gc, maxi_gc=maxi_gc, method=method, organism_name=organism_name,
-                custom_score_fn=custom_score_fn, custom_score_window=custom_score_window,
+                custom_score_fn=custom_score_fn,
                 custom_score_minimize=custom_score_minimize,
                 orf_regions=orf_regions, exclusion_regions=exclusion_regions)
             if custom_score_fn is None:
@@ -131,7 +131,7 @@ def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
             curr_seq, obj_description, num_edits = optimization_engine(
                 curr_seq, df_recombination=df_recombination, df_slippage=df_slippage, df_motifs=df_motifs,
                 mini_gc=mini_gc, maxi_gc=maxi_gc, method=method, organism_name=organism_name,
-                custom_score_fn=custom_score_fn, custom_score_window=custom_score_window,
+                custom_score_fn=custom_score_fn,
                 custom_score_minimize=custom_score_minimize,
                 orf_regions=orf_regions, exclusion_regions=exclusion_regions)
 
@@ -178,7 +178,7 @@ def main(input_folder=None, output_path=None, compute_motifs=False, num_sites=np
          motifs_path=None, common_motifs=None, optimize=True, mini_gc=0.3, maxi_gc=0.7,
          method='use_best_codon', organism_name='not_specified', indexes=None,
          recombination_mode='thorough', slippage_mode='default', custom_score_fn=None,
-         custom_score_window=None, custom_score_minimize=False):
+         custom_score_minimize=False):
     """Optimize every FASTA/GenBank file in `input_folder`, writing per-file CSVs
     of detected hotspots and the optimized sequence into `output_path`.
 
@@ -227,7 +227,7 @@ def main(input_folder=None, output_path=None, compute_motifs=False, num_sites=np
         function - see eso.custom_score.CustomScore. Most users should use
         the `--custom-score-file` CLI flag / eso.custom_score.load_custom_score_from_file
         instead of passing a function directly here.
-    custom_score_window, custom_score_minimize:
+    custom_score_minimize: bool
         See eso.optimize.optimization_engine; only used if custom_score_fn is given.
 
     Returns
@@ -253,7 +253,7 @@ def main(input_folder=None, output_path=None, compute_motifs=False, num_sites=np
             optimize=optimize, mini_gc=mini_gc, maxi_gc=maxi_gc, method=method,
             organism_name=organism_name, indexes=indexes, recombination_mode=recombination_mode,
             slippage_mode=slippage_mode, common_motifs=common_motifs, custom_score_fn=custom_score_fn,
-            custom_score_window=custom_score_window, custom_score_minimize=custom_score_minimize)
+            custom_score_minimize=custom_score_minimize)
         final_results.extend((file, seq_index, seq) for seq_index, seq in curr_results)
 
     return message, final_results

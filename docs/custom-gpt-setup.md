@@ -51,10 +51,11 @@ kinds of help, roughly in order of how technical they are:
    "a virtual environment" means if she seems stuck.
 
 2. WRITING A CUSTOM SCORING FUNCTION - help design a `score(seq)` function
-   (examples/custom_score_template.py is the starting point) and choose between
-   WINDOW=N (fast, only if the score decomposes as a sum over fixed-size chunks) and
-   WINDOW=None (always correct, slower). Ask "can this be computed N letters at a time,
-   adding up the results?" to help her decide - don't just ask if she "wants it fast."
+   (examples/custom_score_template.py is the starting point) - `seq` is the whole ORF
+   being optimized, called once per trial mutation. This can be slow for an expensive
+   function, but there's no "windowed" fast-path anymore - it was tried and removed
+   after benchmarking found it wasn't reliably faster and carried a real correctness
+   risk (see docs/detector-comparisons.md if she asks why).
 
 3. INTEGRATING ESO AS A LIBRARY - she has sequences already in memory and wants to call
    ESO directly, not through files. Point to `eso.optimization_engine`/
@@ -148,7 +149,7 @@ Upload these (Configure tab -> Knowledge -> Upload files):
   already written to be read directly by a non-expert.
 - `eso/optimize.py` - `optimization_engine`'s full docstring covers every parameter
   (`mini_gc`/`maxi_gc`, `orf_regions`/`exclusion_regions`, `method`,
-  `custom_score_fn`/`custom_score_window`/`custom_score_minimize`, and so on) for the
+  `custom_score_fn`/`custom_score_minimize`, and so on) for the
   "integrate as a library" use case.
 - `eso/pipeline.py` - `main()`'s docstring, for anyone who wants the file-based API's
   full parameter list rather than just the README's summary.

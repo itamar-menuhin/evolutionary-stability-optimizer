@@ -84,7 +84,6 @@ def optimization_engine(
     method='use_best_codon',
     organism_name='not_specified',
     custom_score_fn=None,
-    custom_score_window=None,
     custom_score_minimize=False,
     df_recombination=None,
     df_slippage=None,
@@ -116,16 +115,9 @@ def optimization_engine(
         If given, replaces the CodonOptimize (CAI/tAI-style) objective with
         eso.custom_score.CustomScore wrapping this function (higher is
         better sequence, unless custom_score_minimize=True). `organism_name`
-        and `method` are then ignored. See eso.custom_score.CustomScore for
-        the windowed-vs-global tradeoff.
-    custom_score_window: int or None
-        If given, custom_score_fn is called on each successive
-        `custom_score_window`-nt chunk and the results summed (fast, but
-        only correct if the score truly decomposes that way). If None
-        (default), custom_score_fn is called once on the whole sequence on
-        every trial mutation during optimization (always correct, but can be
-        very slow on long sequences - a warning is raised when this mode is
-        used).
+        and `method` are then ignored. Called once per ORF, on the whole ORF,
+        for every trial mutation during optimization - can be slow on long
+        sequences or an expensive custom_score_fn (a warning is raised).
     custom_score_minimize: bool
         If True, treats a lower custom_score_fn value as better.
     df_recombination, df_slippage, df_motifs: pandas.DataFrame or None
@@ -155,11 +147,10 @@ def optimization_engine(
     if custom_score_fn is not None:
         # Scoped to each ORF individually, matching how _codon_optimization_objectives
         # already scopes CodonOptimize to `location=orf` - without this, custom scoring
-        # applied across the whole sequence including any non-ORF flanks (UTRs, locked
-        # regions), inconsistent with codon-usage scoring's own ORF-only behavior, and
-        # not what a "per-codon" custom score (window=3) is meant to describe.
+        # would apply across the whole sequence including any non-ORF flanks (UTRs,
+        # locked regions), inconsistent with codon-usage scoring's own ORF-only behavior.
         obj = [
-            CustomScore(custom_score_fn, window=custom_score_window, location=orf, minimize=custom_score_minimize)
+            CustomScore(custom_score_fn, location=orf, minimize=custom_score_minimize)
             for orf in orf_regions
         ]
     else:

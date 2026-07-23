@@ -202,44 +202,23 @@ def test_custom_score_is_scoped_to_orf_regions_not_the_whole_sequence():
     # sequence regardless of orf_regions, unlike the built-in CAI/tAI codon
     # scoring (which is correctly scoped via CodonOptimize(location=orf, ...)).
     # Confirmed directly before fixing: with orf_regions=[(0, 36)] on a 41nt
-    # sequence, CustomScore's own location was 0-41, not 0-36 - a "per-codon"
-    # custom score would get called on non-ORF flanking nucleotides too.
+    # sequence, CustomScore's own location was 0-41, not 0-36 - a custom score
+    # would get called on non-ORF flanking nucleotides too.
     import dnachisel
     from eso.custom_score import CustomScore
 
     seq = "ATG" + "GCT" * 10 + "TAA" + "AAAAA"  # 41nt total; ORF is 0-36
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        obj = [CustomScore(lambda s: 0, window=3, location=orf) for orf in [(0, 36)]]
+        obj = [CustomScore(lambda s: 0, location=orf) for orf in [(0, 36)]]
     problem = dnachisel.DnaOptimizationProblem(sequence=seq, objectives=obj)
     initialized = obj[0].initialized_on_problem(problem, role="objective")
 
     assert (initialized.location.start, initialized.location.end) == (0, 36)
 
-    seen_chunks = []
-    initialized.score_fn = lambda c: seen_chunks.append(c) or 0
+    seen = []
+    initialized.score_fn = lambda c: seen.append(c) or 0
     initialized.evaluate(problem)
 
-    # every chunk score_fn saw came from inside the ORF - the flanking "AAAAA"
-    # tail was never scored at all, and every chunk is exactly one codon.
-    assert seen_chunks == ["ATG"] + ["GCT"] * 10 + ["TAA"]
-    assert "AAA" not in seen_chunks
-
-
-def test_custom_score_no_remainder_warning_when_orf_length_is_a_window_multiple():
-    # the ORF-scoping fix above also means the common case (window=3 matching
-    # a translation-preserving, always-multiple-of-3 ORF) never triggers the
-    # separate "region length isn't a multiple of window" warning, even when
-    # the full sequence (ORF + flanking non-ORF nucleotides) isn't itself a
-    # multiple of 3.
-    seq = "ATG" + "GCT" * 10 + "TAA" + "AAAAA"  # 41nt total, not a multiple of 3
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        optimization_engine(
-            seq,
-            custom_score_fn=lambda s: s.count("G") + s.count("C"),
-            custom_score_window=3,
-            orf_regions=[(0, 36)],
-        )
-
-    assert not any("not a multiple of window" in str(w.message) for w in caught)
+    # score_fn saw exactly the ORF, nothing from the flanking "AAAAA" tail.
+    assert seen == ["ATG" + "GCT" * 10 + "TAA"]

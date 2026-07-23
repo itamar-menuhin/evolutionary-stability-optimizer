@@ -228,11 +228,7 @@ the filesystem. `suspect_site_extractor` (also importable as
 it on its own if you only want the hotspot dataframes, with no optimization at all.
 
 This composes directly with a custom scoring function - just pass `custom_score_fn=...`
-to `optimization_engine` instead of `organism_name`. **If you're plugging in your own
-model** (an ML model, or any function that scores the sequence as a whole rather than one
-codon at a time - true for most real models), leave `custom_score_window` unset - this
-isn't even necessarily a speed trade-off in practice (see the measured reality further
-down):
+to `optimization_engine` instead of `organism_name`:
 
 ```python
 final_seq, _, num_edits = optimization_engine(
@@ -243,25 +239,6 @@ final_seq, _, num_edits = optimization_engine(
 )
 ```
 
-**Do not** pass `custom_score_window=3` (or any number) unless your score is *provably*
-just a sum of independent per-codon contributions - the same way built-in CAI/tAI scoring
-works. Passing a window when that assumption doesn't hold isn't just "a bit less
-accurate" - it silently computes something structurally unrelated to your real score
-(confirmed directly: a model rewarding the sequence for containing a long repeated run
-anywhere scored a real 9-nucleotide run as `9` in the correct, unwindowed mode, but as
-`15` - a meaningless sum of per-codon maxes - when a window was wrongly applied), with no
-error or warning at any point. There is deliberately no automatic check for this: the only
-way to test it would mean calling `score_fn` on inputs longer than one window, which is
-itself invalid for a function written to only ever receive exactly `window` characters
-(a normal, correct way to write a per-codon lookup table) - such a check would falsely
-flag exactly the legitimate case it's supposed to help (confirmed directly: a plain codon
-lookup table using `.get(codon, default)`, genuinely additive and completely correct with
-`window=3`, triggered a false "not additive" warning under an earlier version of this
-check that has since been removed for that reason). The next section explains exactly
-when a window *is* safe to use (mostly: never, for an external model - it's really only
-for scores that are inherently per-codon, like the built-in codon-usage scoring itself)
-and the speed/correctness trade-off it's for.
-
 See `optimization_engine`'s docstring (`eso/optimize.py`) for every parameter
 (`mini_gc`/`maxi_gc`, `orf_regions`/`exclusion_regions`, `method`, and so on) - everything
 available via `main()`/the CLI is available here too, just without the file layer.
@@ -270,10 +247,10 @@ available via `main()`/the CLI is available here too, just without the file laye
 
 By default, optimization scores codon choices against a codon-usage table (CAI/tAI-style,
 via `organism_name`). To score sequences with your own logic instead, write a Python file
-defining a `score(seq)` function (`seq` is a plain DNA string like `"ATGCGT..."`; return a
-number, higher = better) - copy
+defining a `score(seq)` function (`seq` is a plain DNA string like `"ATGCGT..."`, the whole
+ORF being optimized; return a number, higher = better) - copy
 [`examples/custom_score_template.py`](examples/custom_score_template.py) as a starting
-point, which also explains the `WINDOW` setting described below.
+point.
 
 From the command line:
 
@@ -287,75 +264,45 @@ returns the wrong type - fails immediately with a plain-English message, before 
 optimization runs, rather than surfacing later as a Python traceback.
 
 From Python, either call `optimization_engine`/`eso.pipeline.main` directly with
-`custom_score_fn`/`custom_score_window`/`custom_score_minimize`, or reuse the same
-file-loading + validation the CLI uses via `eso.custom_score.load_custom_score_from_file`:
+`custom_score_fn`/`custom_score_minimize`, or reuse the same file-loading + validation the
+CLI uses via `eso.custom_score.load_custom_score_from_file`:
 
 ```python
 from eso.custom_score import load_custom_score_from_file
 from eso.optimize import optimization_engine
 
-score_fn, window = load_custom_score_from_file("my_score.py")  # same validation as the CLI
-final_seq, _, _ = optimization_engine(seq, custom_score_fn=score_fn, custom_score_window=window)
+score_fn = load_custom_score_from_file("my_score.py")  # same validation as the CLI
+final_seq, _, _ = optimization_engine(seq, custom_score_fn=score_fn)
 
 # or, skipping the file entirely:
 final_seq, _, _ = optimization_engine(
     seq,
-    custom_score_fn=lambda codon: codon.count("G") + codon.count("C"),
-    custom_score_window=3,  # only correct because THIS score really is per-codon - see below
+    custom_score_fn=lambda whole_orf: whole_orf.count("G") + whole_orf.count("C"),
 )
 ```
 
-**The `WINDOW` setting** controls how `score_fn` gets called during optimization:
-
-- **`WINDOW = 3`** (or any positive integer N) - "windowed" mode: `score_fn` is called on
-  each successive, non-overlapping N-nt chunk of the sequence, and the results are summed.
-  Only give a *correct* total score if your real score genuinely decomposes as a sum over
-  fixed-size chunks - it doesn't have to be codon-sized (N=3); any fixed window size works,
-  as long as that decomposition assumption holds. **If the scored region's length isn't
-  itself a multiple of N**, the trailing remainder is silently excluded from every
-  `score_fn` call (only whole windows are ever scored) - ESO warns about this once per
-  optimization run when it happens, so it won't pass silently. This can't occur for the
-  common case (N=3 against a translation-preserving ORF, which is always a multiple of 3
-  already) - it's only reachable with an N that doesn't evenly divide your scored region's
-  length.
-- **`WINDOW = None`** (the default if omitted) - "global" mode: `score_fn` is called once
-  on the entire sequence, from scratch, on *every* trial mutation during optimization.
-  Always correct, no assumption about how the score decomposes.
-
-**`WINDOW` is not reliably a speed optimization - measure your own case rather than
-assuming windowed mode is faster.** The intuitive story ("DNAChisel only re-scores the
-codons actually touched by a trial edit, not the whole sequence") describes the *per-call*
-cost correctly, but doesn't reliably hold up in wall-clock terms. Confirmed directly with a
-`score_fn` that's valid in both modes (a whole-sequence-compatible GC-count): for a cheap
-`score_fn`, both modes reached comparable final quality and comparable wall-clock time
-(within ~10% of each other, across sequences from 20 to 300 codons) - no dramatic
-difference either way. For a `score_fn` with real per-call cost, windowed mode called
-`score_fn` substantially more often than global mode in every case measured (e.g. ~400
-times vs. ~5, for one 100-codon test) - global mode's search evidently gives up sooner when
-it isn't finding improvements, while windowed mode's smaller per-location search spaces
-keep it exploring longer - and this made windowed mode meaningfully slower once the
-function itself wasn't nearly free. This appears to be a property of DNAChisel's own
-optimization algorithm (version 3.2.16), not something specific to ESO's `CustomScore`
-wrapper. **Practical takeaway**: `WINDOW` is a correctness choice, not a dependable speed
-lever either way - if speed matters for your specific `score_fn`, benchmark both modes on
-it directly rather than assuming either one wins.
-
-*(An earlier version of this section reported far more dramatic numbers - "56x slower,"
-"400x more calls," and windowed mode reaching a much better score than global mode, which
-appeared to never improve at all. Those specific figures were an artifact of a flawed test
-that called a per-codon-only lookup function on the whole sequence at once in global mode
-- which returns a meaningless constant value, giving the optimizer nothing real to work
-with. Retested with a function that's actually valid to call either way; the corrected,
-more modest findings above are what's documented here now.)*
-
-Independently of `WINDOW`, `custom_score_minimize=True` (`--custom-score-minimize` on the
-CLI) treats a *lower* `score_fn` value as better, instead of higher.
+`custom_score_fn` is called once on the whole ORF being optimized, on every trial mutation
+tried during `optimize()` - this can be slow for a long sequence or an expensive function
+(a warning is raised). `custom_score_minimize=True` (`--custom-score-minimize` on the CLI)
+treats a *lower* `custom_score_fn` value as better, instead of higher.
 
 **Scope**: custom scoring is automatically restricted to `orf_regions` (one scored region
 per ORF, matching how the built-in CAI/tAI codon-usage scoring is already scoped via
-DNAChisel's `CodonOptimize(location=orf, ...)`) - `score_fn` never sees any non-ORF
+DNAChisel's `CodonOptimize(location=orf, ...)`) - `custom_score_fn` never sees any non-ORF
 flanking sequence (UTRs, locked/excluded regions). If you don't pass `orf_regions`, this
 is the whole sequence (trimmed to a multiple of 3), same as everywhere else in ESO.
+
+**An earlier version of this feature also supported a "windowed" mode** (scoring
+fixed-size chunks and summing them, mirroring how the built-in CAI/tAI scoring works
+internally) as a claimed speed optimization. It was removed after benchmarking found no
+case where it was actually faster than the whole-ORF evaluation above - comparable at
+best, meaningfully slower at worst, since DNAChisel's own optimizer ends up calling the
+score function considerably more often when it's chunk-localizable - while carrying a
+real, unpreventable correctness risk (a score that doesn't genuinely decompose per-chunk,
+true of most real external/ML models, would silently compute a different, structurally
+unrelated quantity, with no reliable way to detect this automatically). See
+`docs/detector-comparisons.md` for the full investigation, including an initial benchmark
+that was itself flawed and had to be corrected before the removal decision was made.
 
 ## Restricting ORF and exclusion regions per sequence
 

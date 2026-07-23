@@ -1408,3 +1408,45 @@ reproducible numbers that are simply about the wrong thing. The fix wasn't
 itself was valid before trusting what it measured, prompted by a user
 question that had nothing to do with methodology and everything to do with
 a reasonable design alternative ("just delete windowed mode").
+
+## Windowed mode removed - the corrected numbers didn't justify keeping it either
+
+Following directly from the correction above: once the real (smaller, but
+still genuine) numbers were in hand - comparable to global mode for a cheap
+`score_fn`, meaningfully slower for an expensive one, never actually
+faster in any case tested - the direct follow-up question ("isn't it
+better to just have the global calculation?") had a clear answer. Windowed
+mode was:
+
+- **Not measurably beneficial anywhere tested.** Best case: a wash. Worst
+  case: slower. No confirmed scenario where it won.
+- **A real, unpreventable correctness risk.** A `score_fn` that doesn't
+  genuinely decompose per-chunk (true of most real external/ML models)
+  silently computes something structurally unrelated to the intended
+  score, with no reliable way to auto-detect this (see the reverted
+  `_check_decomposability` entry above - both false negatives, in the
+  original design motivation, and false positives, on a legitimate
+  per-codon lookup table, were confirmed directly).
+- **Real API/documentation surface for no confirmed benefit** - the
+  `window`/`custom_score_window`/`WINDOW` parameter across `CustomScore`,
+  `optimization_engine`, `load_custom_score_from_file`, the CLI, and the
+  template, plus the remainder-truncation edge case that only existed
+  because of it.
+
+Removed entirely rather than kept as a discouraged/advanced option:
+`CustomScore.window`, `_score_sequence`'s chunking branch, `localized()`'s
+window-extension logic, `initialized_on_problem`'s remainder-truncation
+warning, `load_custom_score_from_file`'s `window_variable` parameter and
+`WINDOW` parsing, `optimization_engine`'s and `eso.pipeline.main`'s
+`custom_score_window` parameter, the CLI's window pass-through, and
+`WINDOW` from `examples/custom_score_template.py`. `CustomScore` now always
+evaluates `score_fn` once on the whole scored region (still correctly
+scoped to `orf_regions`, one instance per ORF - that fix from the earlier
+entry is unaffected and still needed). Updated README, the class's
+docstring, the template, and this doc; removed or rewrote every affected
+test (`tests/test_custom_score.py`, `tests/test_custom_score_loader.py`,
+`tests/test_cli_custom_score.py`, `tests/test_optimize.py`'s two
+windowed-mode-specific tests). Verified end-to-end through the real CLI
+with the actual (now simplified) template file after the change - 162
+tests passing (down from 172 at the peak of the windowed-mode work, net of
+the tests that no longer apply to a feature that no longer exists).
