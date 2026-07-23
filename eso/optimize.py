@@ -153,7 +153,15 @@ def optimization_engine(
         orf_regions = [(0, new_last_index)]
 
     if custom_score_fn is not None:
-        obj = [CustomScore(custom_score_fn, window=custom_score_window, minimize=custom_score_minimize)]
+        # Scoped to each ORF individually, matching how _codon_optimization_objectives
+        # already scopes CodonOptimize to `location=orf` - without this, custom scoring
+        # applied across the whole sequence including any non-ORF flanks (UTRs, locked
+        # regions), inconsistent with codon-usage scoring's own ORF-only behavior, and
+        # not what a "per-codon" custom score (window=3) is meant to describe.
+        obj = [
+            CustomScore(custom_score_fn, window=custom_score_window, location=orf, minimize=custom_score_minimize)
+            for orf in orf_regions
+        ]
     else:
         obj = _codon_optimization_objectives(organism_name, orf_regions, method)
 

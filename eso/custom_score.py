@@ -75,7 +75,20 @@ class CustomScore(dnachisel.Specification):
             )
 
     def initialized_on_problem(self, problem, role=None):
-        return self._copy_with_full_span_if_no_location(problem)
+        initialized = self._copy_with_full_span_if_no_location(problem)
+        if self.window is not None:
+            span = initialized.location.end - initialized.location.start
+            remainder = span % self.window
+            if remainder:
+                warnings.warn(
+                    f"CustomScore's scored region is {span}nt, not a multiple of "
+                    f"window={self.window} - the last {remainder}nt of it will be "
+                    f"silently excluded from every score_fn call, since only whole "
+                    f"windows are scored. If this is meant to be per-codon scoring "
+                    f"(window=3), check that region's length is a multiple of 3.",
+                    stacklevel=2,
+                )
+        return initialized
 
     def _score_sequence(self, sequence):
         if self.window is None:

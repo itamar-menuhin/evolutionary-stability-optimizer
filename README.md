@@ -292,7 +292,13 @@ the main thing to get right:
   edit, not the whole sequence - this is the same mechanism CAI/tAI-style per-codon scoring
   already uses (there, N=3). Only give a *correct* total score if your real score genuinely
   decomposes as a sum over fixed-size chunks - it doesn't have to be codon-sized (N=3);
-  any fixed window size works, as long as that decomposition assumption holds.
+  any fixed window size works, as long as that decomposition assumption holds. **If the
+  scored region's length isn't itself a multiple of N**, the trailing remainder is
+  silently excluded from every `score_fn` call (only whole windows are ever scored) - ESO
+  warns about this once per optimization run when it happens, so it won't pass silently.
+  This can't occur for the common case (N=3 against a translation-preserving ORF, which is
+  always a multiple of 3 already) - it's only reachable with an N that doesn't evenly
+  divide your scored region's length.
 - **`WINDOW = None`** (the default if omitted) - "global" mode: `score_fn` is called once
   on the entire sequence, from scratch, on *every* trial mutation during optimization.
   Always correct, no assumption about how the score decomposes, but can be very slow on
@@ -302,10 +308,11 @@ the main thing to get right:
 Independently of `WINDOW`, `custom_score_minimize=True` (`--custom-score-minimize` on the
 CLI) treats a *lower* `score_fn` value as better, instead of higher.
 
-**Current limitation**: the underlying `eso.custom_score.CustomScore` also accepts a
-`location` to restrict scoring to a sub-region of the sequence, but this isn't exposed via
-the file-based loader or the CLI yet - only relevant if you need to score just part of a
-sequence rather than the whole thing.
+**Scope**: custom scoring is automatically restricted to `orf_regions` (one scored region
+per ORF, matching how the built-in CAI/tAI codon-usage scoring is already scoped via
+DNAChisel's `CodonOptimize(location=orf, ...)`) - `score_fn` never sees any non-ORF
+flanking sequence (UTRs, locked/excluded regions). If you don't pass `orf_regions`, this
+is the whole sequence (trimmed to a multiple of 3), same as everywhere else in ESO.
 
 ## Restricting ORF and exclusion regions per sequence
 

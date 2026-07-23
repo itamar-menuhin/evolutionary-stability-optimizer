@@ -28,6 +28,14 @@ sequence every single time it tries a change, however small.
 If you're not sure which applies to you: if you can imagine writing your
 score by looking at 3 letters at a time and adding up the results, use
 WINDOW = 3. If you can't, use WINDOW = None.
+
+Your score only ever sees the coding region(s) (ORF) being optimized, never
+any flanking sequence outside them (e.g. a UTR) - same as the built-in
+CAI/tAI scoring. If WINDOW doesn't evenly divide the length of what's being
+scored, the leftover few letters at the end are silently skipped (never
+passed to this function at all) - ESO will warn you if this happens, though
+it can't happen for the default WINDOW = 3 case, since a coding region's
+length is always a multiple of 3 already.
 """
 
 WINDOW = 3  # 3 = score is computed per-codon and added up (fast).

@@ -39,17 +39,45 @@ def test_global_mode_localized_returns_self_unchanged():
     assert localized.location == spec.location
 
 
-def test_windowed_mode_sums_per_window_scores_no_warning():
+def test_windowed_mode_sums_per_window_scores_no_warning_at_construction():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         spec = CustomScore(_gc_count, window=3)
 
-    seq = "ATGCATGCAT"  # 10nt -> 3 full windows of 3, last nt dropped
+    # 10nt -> 3 full windows of 3, last nt dropped - initialized_on_problem (not
+    # construction) is where this now warns, see test below.
+    seq = "ATGCATGCAT"
     problem = dnachisel.DnaOptimizationProblem(sequence=seq, objectives=[spec])
-    spec = spec.initialized_on_problem(problem)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        spec = spec.initialized_on_problem(problem)
     evaluation = spec.evaluate(problem)
     expected = sum(_gc_count(seq[i:i + 3]) for i in range(0, 9, 3))
     assert evaluation.score == expected
+
+
+def test_windowed_mode_warns_when_region_length_not_a_multiple_of_window():
+    # regression test: a scored region whose length isn't a multiple of `window`
+    # silently drops its trailing remainder from every score_fn call (only whole
+    # windows are ever scored) - confirmed directly this was previously silent.
+    # Must now warn so a user isn't surprised by nucleotides never reaching their
+    # score_fn.
+    spec = CustomScore(_gc_count, window=3)
+    seq = "ATGCATGCAT"  # 10nt, remainder 1
+    problem = dnachisel.DnaOptimizationProblem(sequence=seq, objectives=[spec])
+
+    with pytest.warns(UserWarning, match="not a multiple of window"):
+        spec.initialized_on_problem(problem)
+
+
+def test_windowed_mode_no_warning_when_region_length_is_a_multiple_of_window():
+    spec = CustomScore(_gc_count, window=3)
+    seq = "ATGCATGCA" * 3  # 27nt, a clean multiple of 3
+    problem = dnachisel.DnaOptimizationProblem(sequence=seq, objectives=[spec])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        spec.initialized_on_problem(problem)
 
 
 def test_windowed_mode_localized_restricts_to_nearby_windows():

@@ -1197,3 +1197,50 @@ most likely first-run failure modes (`eso-optimize` not found → use
 pip; wrong Python for the install; empty results). Previously, install and
 usage instructions were split across several sections and assumed the
 reader already knew what `poetry`, a virtualenv, or a CLI flag was.
+
+## eso.custom_score - two real gaps found while double-checking custom scoring end-to-end
+
+Prompted by a direct question about whether custom scoring was genuinely
+"well set up, documented, and easy to follow" - rather than just asserting
+yes, both modes (windowed and global) were re-verified directly, which
+surfaced two real, previously-undocumented (and, for the first, untested
+as a *problem* - it was already covered by a test that simply accepted it
+as expected) behaviors.
+
+**A scored region whose length isn't a multiple of `WINDOW` silently drops
+the trailing remainder.** Confirmed directly: a 35nt sequence with
+`WINDOW=3` only ever passes 33nt to `score_fn` - the last 2 nucleotides
+never reach it, in any trial mutation, with no error or warning. This
+wasn't a newly introduced bug (a pre-existing test's own comment already
+said `"10nt -> 3 full windows of 3, last nt dropped"`), but it was never
+surfaced to a user anywhere - not the README, not the CLI, not
+`examples/custom_score_template.py`. Fixed by warning once per
+`DnaOptimizationProblem` construction (`initialized_on_problem`, not
+`__init__`, since the scored region's actual length isn't known until a
+problem exists) whenever the scored region's length isn't a multiple of
+`window` - matches the "warn, don't silently do less than what was asked"
+pattern already used for `optimize.py`'s dropped-constraint case above.
+
+**Custom scoring wasn't scoped to `orf_regions` at all - it spanned the
+whole optimizable sequence.** Confirmed directly: with
+`orf_regions=[(0, 36)]` on a 41nt sequence (5nt of non-ORF flanking
+sequence), `CustomScore`'s own `location` after initialization was `0-41`,
+not `0-36` - a "per-codon" custom score would get called on non-ORF
+flanking nucleotides too, inconsistent with the built-in CAI/tAI codon
+scoring, which is correctly scoped per-ORF via
+`CodonOptimize(location=orf, ...)` in `_codon_optimization_objectives`.
+Fixed by constructing one `CustomScore` per ORF region, each with
+`location=orf`, mirroring `_codon_optimization_objectives`'s own pattern,
+instead of a single unscoped `CustomScore` spanning the whole sequence.
+Verified directly: re-running the same 41nt/36nt-ORF reproduction now
+shows `CustomScore`'s location as `0-36`, `score_fn` never sees the
+flanking tail, and - as a side effect - the common case (window=3 against
+a translation-preserving ORF, always a multiple of 3) can no longer
+trigger the remainder warning above even when the *whole* sequence
+(ORF + flanking nucleotides) isn't itself a multiple of 3, since only the
+ORF's own length matters now.
+
+Both fixes, plus updated README/`custom_score_template.py` documentation
+describing the ORF-only scope and the remainder-warning behavior, verified
+via 4 new/updated tests in `tests/test_custom_score.py` and
+`tests/test_optimize.py` (169 passed total, up from 165).
