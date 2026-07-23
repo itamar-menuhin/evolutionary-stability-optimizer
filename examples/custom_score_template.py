@@ -22,12 +22,14 @@ If your score genuinely needs to look at the WHOLE gene at once to make
 sense (e.g. it depends on some property of the entire sequence, not just
 one codon), set WINDOW = None instead.
 
-This is a CORRECTNESS choice, not (reliably) a speed choice - don't assume
-WINDOW = 3 is "the fast one." Confirmed directly: DNAChisel's own optimizer
-can end up calling your score function far MORE times in windowed mode than
-in whole-sequence mode, to the point that windowed mode measured 56x SLOWER
-in one real test. If you're choosing WINDOW to make things faster, benchmark
-both settings on your actual sequence first.
+This is a CORRECTNESS choice, not a dependable speed choice - don't assume
+WINDOW = 3 is "the fast one." Confirmed directly: for a cheap score
+function, both settings perform about the same. But if your score function
+does real work per call (e.g. it calls out to a model), windowed mode can
+end up calling it far more times overall than whole-sequence mode, making
+it meaningfully SLOWER in practice, not faster. If you're choosing WINDOW to
+make things faster, benchmark both settings on your actual sequence first -
+don't assume.
 
 The only thing that matters for choosing WINDOW is whether your score is
 CORRECT when computed this way: if you can imagine writing your score by

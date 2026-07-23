@@ -1320,73 +1320,91 @@ state plainly that this can't be auto-detected - it's on the author to
 know their score decomposes, with `WINDOW = None` always safe as a
 fallback. 169 tests (down from 172, the 3 reverted).
 
-## eso.custom_score - WINDOW is not reliably a speed optimization
+## eso.custom_score - WINDOW is not a dependable speed optimization (corrected twice)
 
 Directly investigating the same follow-up question above (can someone with
-a genuine per-codon metric get "the faster codon pathway") led to
-discovering something significantly more consequential than the
-decomposability check: **windowed mode is not reliably faster than global
-mode, and can be dramatically slower**, contradicting what both this
-codebase's and DNAChisel's own documentation claim.
+a genuine per-codon metric get "the faster codon pathway") turned into a
+two-round investigation - the first round's numbers were themselves wrong,
+caught only by a further follow-up question ("wouldn't it be simpler to
+just delete windowed mode?") that prompted re-checking the evidence instead
+of accepting it.
 
-Confirmed directly, not assumed: benchmarked `optimization_engine` with a
-genuinely additive per-codon lookup-table score across sequences from 50 to
-500 codons. Windowed mode was consistently *slower* than global mode, and
-the gap widened with sequence length (0.31x, 0.11x, then 0.06x the speed of
-global mode at 50/200/500 codons respectively - i.e. getting relatively
-*worse*, not better, exactly backwards from the documented expectation).
-With an artificially expensive `score_fn` (a 0.5ms `time.sleep`, simulating
-a real model's inference cost - precisely the scenario windowed mode is
-supposed to help with), windowed mode took 3.36s vs. global mode's 0.06s on
-a 30-codon test - 56x slower, not faster.
+**Round 1 (later found to be flawed).** Benchmarked `optimization_engine`
+with a per-codon lookup-table score (`CODON_WEIGHTS.get(codon, 1)`) across
+sequences from 50 to 500 codons, in both windowed and global mode. Windowed
+mode appeared consistently *slower*, worsening with sequence length; with
+an artificially expensive version of the same function, windowed mode
+appeared 56x slower; and global mode appeared not to improve the sequence
+at all across repeated trials, while windowed mode did. Traced actual
+`score_fn` call counts to explain this: ~187,000 calls in windowed mode
+for a 200-codon sequence vs. ~100 in global mode.
 
-**Root cause, traced directly through DNAChisel's own `optimize_objective`
-source** (not assumed): counting actual `score_fn` calls showed windowed
-mode making ~187,000 calls for a 200-codon sequence vs. global mode's ~100 -
-roughly 400x more calls per codon. DNAChisel's `optimize_objective` reads
-`objective.evaluate(problem).locations` once, then for each location builds
-a small "local problem" and either exhaustively or randomly searches its
-mutation space (`optimize_by_exhaustive_search`/`optimize_by_random_mutations`,
-chosen by comparing the local mutation space's size against
-`randomization_threshold`, default 10,000). `CustomScore.evaluate()` always
-returns the *entire* scored region as a single combined location
-(`locations=[self.location]`), so DNAChisel treats the whole ORF as one
-"local problem" whose combinatorial mutation space is far larger than
-`randomization_threshold`, falling into `optimize_by_random_mutations` with
-`max_random_iters` (default 1000) random trial mutations across the *whole*
-region - each requiring re-evaluating the objective - rather than many
-small, cheap, exhaustive per-codon searches (which is what the built-in
-`CodonOptimize`, timed at a comparable 0.377s to windowed `CustomScore` on
-the same sequence, appears to do internally).
+**Round 2 - the flaw.** `CODON_WEIGHTS.get(codon, 1)` is a *per-codon-only*
+function - it was never designed to receive more than 3 characters. Global
+mode calls `score_fn` **once on the entire sequence**, so
+`CODON_WEIGHTS.get(entire_96nt_string, 1)` was never going to match a
+3-character dict key, and silently returned the fallback value `1` -
+*constant*, regardless of what mutation was tried. Global mode's apparent
+"failure to optimize at all" wasn't a DNAChisel bug - it was being handed a
+completely uninformative, constant score, correctly detected as stagnant
+after DNAChisel's default `optimization_stagnation_tolerance` (100 failed
+attempts) and abandoned early. That also explains the suspiciously low
+~100-call count in round 1: it wasn't "genuinely fast," it was giving up
+almost immediately because there was nothing to find.
 
-**A targeted fix was attempted and did not work.** Prototyped a version of
-`CustomScore.evaluate()` that reports one small location per window instead
-of one combined span, hypothesizing this would let DNAChisel's outer loop
-iterate over many small, cheap, exhaustively-searchable per-codon
-"local problems" instead of one enormous randomly-searched one. This did
-reduce total `score_fn` calls substantially (187,000 → 26,000, roughly 7x
-fewer, on the 200-codon cheap-`score_fn` case) - but wall-clock time barely
-changed (0.433s → 0.476s for the cheap case; 3.36s → 3.54s for the
-expensive-`score_fn` case, i.e. no improvement at all where it would matter
-most). This means the real bottleneck is not simply "one big location vs.
-many small ones" - something deeper in DNAChisel's per-location
-optimization loop (possibly related to how `localized()`'s window-extension
-interacts with the local mutation space, or `optimize_by_random_mutations`
-itself, or per-location bookkeeping overhead unrelated to `score_fn` call
-count) remains the actual bottleneck, and wasn't identified within the time
-budget available for this investigation.
+This is exactly the same class of mistake the ORF-scoping and
+decomposability investigations above were about (misapplying a
+per-codon-shaped function outside the domain it was designed for) - made
+here by the investigator, not a user, while testing the very feature meant
+to protect against it.
 
-**Current state, left genuinely open rather than papered over:** the
-`WINDOW` setting is documented (README, `CustomScore`'s own docstring and
-runtime warning, `examples/custom_score_template.py`) purely as a
-*correctness* choice (does your score genuinely decompose as a sum over
-fixed-size chunks) with an explicit, evidence-backed statement that it is
-not a reliable speed choice - anyone optimizing for speed is told to
-benchmark their own case rather than trust either mode's reputation. This
-appears to be a property of DNAChisel's current optimization algorithm
-(version 3.2.16) rather than a bug introduced in this codebase's
-`CustomScore` wrapper, but that's based on the evidence gathered here, not
-a confirmed diagnosis from DNAChisel's own maintainers or changelog - a
-genuine follow-up would mean either reporting this upstream to DNAChisel,
-or a much deeper dive into `optimize_by_random_mutations` and
-`DnaOptimizationProblem`'s per-location bookkeeping than was done here.
+**Re-tested with a function genuinely valid in either mode** (a GC-count,
+meaningful whether called per-codon-and-summed or on the whole sequence at
+once) to get an apples-to-apples comparison:
+
+- **Cheap `score_fn`**: windowed and global mode reached comparable final
+  quality and comparable wall-clock time (within ~10% of each other) across
+  20, 100, and 300-codon sequences. No dramatic difference either way -
+  round 1's "0.31x, 0.11x, 0.06x, getting worse with scale" figures do not
+  reproduce with a valid function and were an artifact of global mode's
+  early abandonment, not a genuine property of either mode.
+- **`score_fn` with real per-call cost** (sleep scaled to how much sequence
+  a call covers, so the comparison charges each mode fairly for the total
+  amount of sequence it actually processes): windowed mode was still
+  measurably slower (~14x in one test), and made substantially more total
+  `score_fn` calls (402 vs. 5, in a fair 100-codon comparison) - this part
+  of the original finding holds up under a valid test, just at a smaller,
+  less dramatic magnitude than round 1 reported (an 80x call-count gap here,
+  not round 1's 400x-1870x figures).
+
+**Root cause of the real (smaller) effect, traced through DNAChisel's own
+`optimize_objective`/`optimize_by_random_mutations` source**: `evaluate()`
+returns the *entire* scored region as one combined location, so DNAChisel
+treats the whole ORF as a single "local problem" and searches it via
+`optimize_by_random_mutations` (random trial mutations, up to
+`max_random_iters`, default 1000, stopping early after
+`optimization_stagnation_tolerance`, default 100, consecutive non-improving
+attempts) rather than many small independent per-codon searches. A targeted
+fix (reporting one small location per window instead of one combined span,
+to let DNAChisel iterate over many cheap per-codon searches) reduced the
+call count meaningfully but not proportionally, and didn't fully close the
+gap - the precise mechanism remains only partially understood.
+
+**Corrected conclusion, now backed by a valid test:** `WINDOW` is
+documented as a *correctness* choice (does your score genuinely decompose
+as a sum over fixed-size chunks), not a dependable speed choice - for a
+cheap `score_fn` it usually won't matter either way; for an expensive one,
+global mode may well be faster despite the "windowed only re-checks touched
+codons" intuition. Benchmark your own case with your own real `score_fn`,
+not a guess. The specific numbers in README/`CustomScore`'s
+docstring/`examples/custom_score_template.py` were corrected to the round-2
+figures, with an explicit note that the original, more dramatic numbers
+were wrong and why.
+
+**The broader lesson, worth stating plainly:** a benchmark using the wrong
+test function doesn't fail loudly - it produces clean-looking, precise,
+reproducible numbers that are simply about the wrong thing. The fix wasn't
+"try harder to explain the 56x" - it was re-checking whether the test
+itself was valid before trusting what it measured, prompted by a user
+question that had nothing to do with methodology and everything to do with
+a reasonable design alternative ("just delete windowed mode").

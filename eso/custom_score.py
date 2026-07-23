@@ -26,20 +26,19 @@ class CustomScore(dnachisel.Specification):
       non-overlapping N-nt chunk of the sequence and the results are summed.
       Only correct if your true score genuinely decomposes as a sum over
       fixed-size windows (this is what CAI/tAI-style per-codon scoring does -
-      e.g. N=3 for a per-codon function). NOT reliably faster in wall-clock
-      terms than global mode, despite each individual call being cheaper -
-      confirmed directly that DNAChisel's own optimize() runs a much more
-      exhaustive search for a localizable objective than a non-localizable
-      one (~400x more score_fn calls measured in one case), which can easily
-      dominate any per-call savings. Benchmark your own case; don't assume
-      this is the fast path.
+      e.g. N=3 for a per-codon function). NOT a dependable speed choice
+      either way - confirmed directly (with a score_fn valid to call in both
+      modes) that cheap score functions perform comparably in both modes, but
+      a score_fn with real per-call cost can make windowed mode meaningfully
+      *slower* than global mode, since DNAChisel's own optimize() calls
+      score_fn considerably more often when the objective is localizable.
+      Benchmark your own case; don't assume this is the fast path.
 
     - **global** (`window=None`, the default): `score_fn` is called once on
       the whole sequence (or `location`, if given). Always correct - no
-      assumption about how the score decomposes. Can be slow for an
-      expensive `score_fn` since it's re-evaluated on every trial mutation,
-      but empirically this is not a reliable predictor of which mode is
-      actually faster overall - see above.
+      assumption about how the score decomposes. See above - which mode is
+      actually faster depends on your specific score_fn, not on this choice
+      alone.
 
     Parameters
     ----------

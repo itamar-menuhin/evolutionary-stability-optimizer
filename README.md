@@ -325,23 +325,28 @@ final_seq, _, _ = optimization_engine(
 **`WINDOW` is not reliably a speed optimization - measure your own case rather than
 assuming windowed mode is faster.** The intuitive story ("DNAChisel only re-scores the
 codons actually touched by a trial edit, not the whole sequence") describes the *per-call*
-cost correctly, but doesn't hold up in wall-clock terms: confirmed directly, across
-sequences from 50 to 500 codons and with both a cheap and an artificially-expensive (0.5ms
-per call, simulating a real model) `score_fn`, windowed mode was consistently *slower* than
-global mode - in the expensive-`score_fn` case, 56x slower (3.36s vs. 0.06s on a 30-codon
-test), not faster. Root cause (traced directly, not assumed): DNAChisel's own
-`optimize()` runs a much more exhaustive local search when an objective is localizable
-(windowed `CustomScore`, and the built-in `CodonOptimize`) than when it isn't (global
-`CustomScore`) - in the cases measured, this meant roughly 400x more total `score_fn`
-calls in windowed mode, which dominates over any per-call savings unless `score_fn` is
-close to free. This appears to be a property of DNAChisel's current optimization
-algorithm itself (version 3.2.16) rather than something wrong in ESO's `CustomScore`
-wrapper - a targeted attempt to fix it (reporting many small per-window locations from
-`evaluate()` instead of one combined span, closer to what `CodonOptimize` likely does
-internally) did not resolve the slowdown, so the actual root cause inside DNAChisel's
-search loop remains unidentified. If you're choosing `WINDOW` for a real `score_fn`,
-benchmark both modes on a realistic sequence length first - don't default to assuming a
-window makes things faster.
+cost correctly, but doesn't reliably hold up in wall-clock terms. Confirmed directly with a
+`score_fn` that's valid in both modes (a whole-sequence-compatible GC-count): for a cheap
+`score_fn`, both modes reached comparable final quality and comparable wall-clock time
+(within ~10% of each other, across sequences from 20 to 300 codons) - no dramatic
+difference either way. For a `score_fn` with real per-call cost, windowed mode called
+`score_fn` substantially more often than global mode in every case measured (e.g. ~400
+times vs. ~5, for one 100-codon test) - global mode's search evidently gives up sooner when
+it isn't finding improvements, while windowed mode's smaller per-location search spaces
+keep it exploring longer - and this made windowed mode meaningfully slower once the
+function itself wasn't nearly free. This appears to be a property of DNAChisel's own
+optimization algorithm (version 3.2.16), not something specific to ESO's `CustomScore`
+wrapper. **Practical takeaway**: `WINDOW` is a correctness choice, not a dependable speed
+lever either way - if speed matters for your specific `score_fn`, benchmark both modes on
+it directly rather than assuming either one wins.
+
+*(An earlier version of this section reported far more dramatic numbers - "56x slower,"
+"400x more calls," and windowed mode reaching a much better score than global mode, which
+appeared to never improve at all. Those specific figures were an artifact of a flawed test
+that called a per-codon-only lookup function on the whole sequence at once in global mode
+- which returns a meaningless constant value, giving the optimizer nothing real to work
+with. Retested with a function that's actually valid to call either way; the corrected,
+more modest findings above are what's documented here now.)*
 
 Independently of `WINDOW`, `custom_score_minimize=True` (`--custom-score-minimize` on the
 CLI) treats a *lower* `score_fn` value as better, instead of higher.
