@@ -227,18 +227,31 @@ the filesystem. `suspect_site_extractor` (also importable as
 `eso.suspect_site_extractor`) is the same detection step `main()` runs internally; call
 it on its own if you only want the hotspot dataframes, with no optimization at all.
 
-This composes directly with a custom scoring function (see the next section) - just pass
-`custom_score_fn=...` to `optimization_engine` instead of `organism_name`:
+This composes directly with a custom scoring function - just pass `custom_score_fn=...`
+to `optimization_engine` instead of `organism_name`. **If you're plugging in your own
+model** (an ML model, or any function that scores the sequence as a whole rather than one
+codon at a time - true for most real models), leave `custom_score_window` unset:
 
 ```python
 final_seq, _, num_edits = optimization_engine(
     seq,
-    custom_score_fn=lambda s: s.count("G") + s.count("C"),  # any function seq -> number
-    custom_score_window=3,
+    custom_score_fn=my_model.predict,  # any function: whole seq (str) -> a number, higher = better
     df_recombination=sites["df_recombination"],
     df_slippage=sites["df_slippage"],
 )
 ```
+
+**Do not** pass `custom_score_window=3` (or any number) unless your score is *provably*
+just a sum of independent per-codon contributions - the same way built-in CAI/tAI scoring
+works. Passing a window when that assumption doesn't hold isn't just "a bit less
+accurate" - it silently computes something structurally unrelated to your real score
+(confirmed directly: a model rewarding the sequence for containing a long repeated run
+anywhere scored a real 9-nucleotide run as `9` in the correct, unwindowed mode, but as
+`15` - a meaningless sum of per-codon maxes - when a window was wrongly applied), with no
+error or warning, since DNAChisel has no way to know your window choice was wrong. The
+next section explains exactly when a window *is* safe to use (mostly: never, for an
+external model - it's really only for scores that are inherently per-codon, like the
+built-in codon-usage scoring itself) and the speed/correctness trade-off it's for.
 
 See `optimization_engine`'s docstring (`eso/optimize.py`) for every parameter
 (`mini_gc`/`maxi_gc`, `orf_regions`/`exclusion_regions`, `method`, and so on) - everything
@@ -279,7 +292,7 @@ final_seq, _, _ = optimization_engine(seq, custom_score_fn=score_fn, custom_scor
 final_seq, _, _ = optimization_engine(
     seq,
     custom_score_fn=lambda codon: codon.count("G") + codon.count("C"),
-    custom_score_window=3,
+    custom_score_window=3,  # only correct because THIS score really is per-codon - see below
 )
 ```
 

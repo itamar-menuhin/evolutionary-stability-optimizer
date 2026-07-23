@@ -1244,3 +1244,38 @@ Both fixes, plus updated README/`custom_score_template.py` documentation
 describing the ORF-only scope and the remainder-warning behavior, verified
 via 4 new/updated tests in `tests/test_custom_score.py` and
 `tests/test_optimize.py` (169 passed total, up from 165).
+
+## README - the first custom-scoring example someone integrating their own model would copy was actively misleading
+
+Prompted by a direct question about whether custom scoring would be easy
+to pick up, at low integration cost, for someone arriving with their own
+external model and no other context. The README's "Using ESO as a
+library" section - the natural first stop for exactly that person, since
+it's framed around "you already have code, not files" - showed
+`custom_score_window=3` in its only custom-scoring example, with no
+caveat that this is only correct when the score genuinely decomposes as a
+sum of independent per-codon contributions.
+
+Confirmed directly this isn't a hypothetical edge case but a real,
+silent-failure-shaped trap: a stand-in "model" that rewards a sequence
+for containing a long repeated run anywhere (a very ML-model-like
+shape - global, not local) scored a real 9-nucleotide run correctly as
+`9` in the correct (no-window) mode, but as `15` - a meaningless sum of
+per-codon maxes - when a window was applied, as the copied example would
+have led someone to do. This isn't "slightly less accurate" - it's
+DNAChisel optimizing toward a completely different, structurally
+unrelated quantity than the one actually intended, with no error or
+warning at any point, since there's no way for the code to know the
+window choice was semantically wrong (unlike the remainder-truncation
+case above, which is at least mechanically detectable).
+
+Fixed by rewriting the library section's example to lead with the safe
+default for an external model (omit `custom_score_window` entirely -
+correct always, if slower) and moving the windowed variant to an
+explicitly-flagged, opt-in case with the concrete 9-vs-15 evidence
+inline, plus a matching inline comment on the "Scoring sequences your own
+way" section's own windowed example ("only correct because THIS score
+really is per-codon - see below") for anyone who reads that section
+directly instead. No code changes - this was purely a case of the
+mechanically-easiest-to-copy example being the semantically wrong default
+for the audience most likely to reach for it first.
