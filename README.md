@@ -432,6 +432,10 @@ poetry install --with dev
 pytest
 ```
 
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for this repo's testing/documentation
+conventions, how the two independently-developed detector implementations
+relate to each other, and how to report a bug.
+
 ## Citation
 
 If you use this tool, please cite the paper it implements:
