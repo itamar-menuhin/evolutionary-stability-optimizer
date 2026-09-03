@@ -1450,3 +1450,254 @@ windowed-mode-specific tests). Verified end-to-end through the real CLI
 with the actual (now simplified) template file after the change - 162
 tests passing (down from 172 at the peak of the windowed-mode work, net of
 the tests that no longer apply to a feature that no longer exists).
+
+## Overlap-collapse coverage gap: dropped hotspot candidates never got a correction constraint
+
+Found while doing similar cleanup/hardening work on a different, downstream
+repo and reasoning about `eso.detection._overlap`'s collapse helper - not
+something this codebase's own test suite had caught.
+
+**The bug.** `collapse_overlapping_intervals` (used by
+`eso.detection.slippage.find_slippage_sites` and
+`eso.detection.recombination`'s `_collapse_overlapping_pairs`, both via
+`eso.detection.staubility_variant`'s slippage variant too) is non-max
+suppression: walk candidates in descending score order, **drop** (not
+merge) any candidate whose range overlaps an already-kept, higher-scoring
+candidate's range. `ranges_overlap` only requires the two ranges to
+*overlap*, not that one *contain* the other, to trigger a drop. That's the
+actual gap: for two candidates whose ranges overlap but neither contains
+the other, dropping the lower-scoring one can leave part of a genuinely
+distinct hotspot with zero correction constraint, forever - nothing
+downstream ever sees the dropped candidate's span again.
+
+Concretely, confirmed directly with a length-2 slippage site over `[0, 10)`
+("CACACACACA") and a length-3 site over `[8, 20)` ("CAACAACAACAA"),
+overlapping only at `[8, 10)`: the length-2 site scores higher
+(-4.434 vs -4.497 log10 prob) and survives non-max suppression, the
+length-3 site is dropped entirely. Before this fix, `modify_df_slippage`
+only ever saw the survivor, so positions `[10, 20)` - real enough to be an
+independently detected hotspot - got no constraint at all and, unless
+disturbed incidentally by an unrelated GC/codon-optimization edit, would
+survive optimization completely untouched. `tests/test_detection_slippage.py`'s
+`test_optimization_engine_disrupts_both_overlapping_but_distinct_sites`
+reproduces this end-to-end.
+
+**The fix - two different consumers need two different reductions, not
+one.** A "how many distinct sites" report/count (the CSVs, `num_sites`
+truncation) legitimately wants one representative per group of overlapping
+candidates - that's what non-max suppression is for, and it's kept
+unchanged for that purpose
+(`collapse_slippage_sites`/`collapse_recombination_sites`, still backing
+`find_slippage_sites`/`find_recombination_sites`). But feeding a
+*correction* step from that same collapsed table is a different use case
+with a different correctness requirement: every real candidate's span needs
+*some* constraint covering it, even if it overlaps a higher-scoring one.
+
+Two options were considered for the correction-feeding path:
+
+1. **Feed every raw candidate, uncollapsed, into constraint-building.**
+   Simplest to reason about, but a real regression risk for recombination
+   specifically: the module's own docs already note that many
+   near-duplicate seed pairs converge, via elongation, on the same real
+   hotspot at slightly different extents - `_collapse_overlapping_pairs`
+   exists *because* of this. Feeding all of them (rather than one
+   representative) into `recombination_to_multiple_avoidance_sites` would
+   multiply `_substitution_recombinations`'s already-expensive
+   neighbor-generation (up to 4x the site length per candidate row) by
+   however many redundant near-duplicates converged on one site - a real
+   performance cost for the common case, to fix a gap that only actually
+   matters for the *uncommon*, only-partially-overlapping case.
+2. **Only add back what plain NMS actually loses: candidates not fully
+   *contained* in a kept row.** Implemented as
+   `collapse_overlapping_intervals_no_coverage_loss` in
+   `eso.detection._overlap` (and a pair-aware sibling,
+   `_collapse_overlapping_pairs_no_coverage_loss`, in
+   `eso.detection.recombination`): identical walk, but a candidate is only
+   dropped if its *entire* range is already covered by a higher-scoring
+   kept one, not merely overlapping it. The common case (several detections
+   converging on essentially the same extent) still collapses to one row,
+   exactly as before - so no performance regression there - but a candidate
+   sticking out beyond every higher-scoring one it overlaps survives.
+
+Option 2 was chosen: it closes the exact gap in the bug report without
+reintroducing the constraint-count blowup option 1 would cause for the
+common redundant-candidate case.
+
+**What changed.** `eso.detection.slippage`, `eso.detection.recombination`,
+and `eso.detection.staubility_variant` each gained a `*_candidates(seq)`
+function (every candidate, uncollapsed, not limited by `num_sites` - the
+shared base everything else is derived from) and a
+`*_sites_for_constraints(df)` function (the no-coverage-loss reduction).
+`eso.detection.dispatch` exposes both, mode-routed, alongside the existing
+`find_*_sites`/`collapse_*_sites`. `eso.pipeline.suspect_site_extractor`
+now runs detection once per category and derives both views from it:
+`df_recombination`/`df_slippage` (collapsed, `num_sites`-limited - unchanged,
+still what gets written to the CSVs) and new `df_recombination_raw`/
+`df_slippage_raw` keys (the for-constraints reduction, never limited by
+`num_sites`). `eso.pipeline.backend` now passes the `_raw` dataframes into
+`optimization_engine`, not the collapsed ones. `num_sites` is now
+documented as report-only for this reason - letting it cap what gets
+constrained would silently reintroduce the same coverage-loss risk for
+whichever candidates it happened to cut.
+
+`staubility_variant`'s recombination detector never collapsed pairs in the
+first place (it only merges exact back-to-back matches, a lossless
+operation) - so its `*_sites_for_constraints` is a pass-through, kept only
+for a uniform interface across both implementations via
+`eso.detection.dispatch`.
+
+Also fixed in passing: the README's "Using ESO as a library" section
+previously passed `sites["df_recombination"]`/`sites["df_slippage"]`
+(the collapsed view) straight into `optimization_engine` - exactly the
+pattern that reintroduces this bug for anyone integrating ESO directly.
+Updated to use the `_raw` keys instead.
+
+Verified via `tests/test_detection_overlap.py` (unit tests on both new
+`_overlap.py` functions with synthetic ranges),
+`tests/test_detection_slippage.py`/`test_detection_recombination.py`
+(the concrete overlapping-but-not-nested scenario, both at the dataframe
+level and, for slippage, a full `optimization_engine` end-to-end run
+confirming both spans actually get disturbed), and
+`tests/test_pipeline_integration.py` (confirming `suspect_site_extractor`
+exposes the `_raw` keys and that `num_sites` doesn't limit them). 170
+tests passing (up from 162).
+
+## Whole-repo bug audit, prompted by similar work on a different repo
+
+Asked to check the rest of this codebase for bugs of a similar class after
+the overlap-collapse fix above. Found and fixed four more, all real,
+independent of that fix (the first was actually *exposed by* it, not
+present before):
+
+- **`eso.constraints._indel_recombinations`/`_substitution_recombinations`
+  silently constrained a locked region when BOTH sites of a recombination
+  pair were excluded.** Both functions pick whichever site of a pair isn't
+  excluded to build an avoidance constraint against - but neither had a
+  case for "both are excluded": `_indel_recombinations` fell through to
+  returning the smaller region anyway (already known to overlap an
+  exclusion), and `_substitution_recombinations`'s swap condition
+  (`region_2 excluded and not region_1 excluded`) is simply False when both
+  are excluded, so it fell through to using region_2 (also excluded).
+  Either way, the resulting `AvoidPattern` constraint directly contradicts
+  the hard `AvoidChanges` constraint built for that same locked region -
+  DNAChisel's retry loop then has to drop one of two conflicting
+  constraints, and could drop the user's own lock instead of the spurious
+  pattern-avoidance one. Fixed: both functions now return no constraint at
+  all (and warn) when both sites are excluded - there's no site left that
+  can legally be mutated to break the pair, so nothing should be forced.
+  Confirmed directly (`tests/test_constraints.py`'s two new
+  `..._yields_no_constraint_when_both_regions_excluded` tests) and via a
+  real end-to-end CLI run that happened to hit this exact case
+  (`tests/test_cli.py::test_indexes_file_actually_locks_the_exclusion_region_end_to_end`).
+
+- **That last fix immediately exposed a second, previously-latent bug**:
+  `eso.constraints.exclusion_site_correcter` crashed
+  (`ValueError: Got 1 positions but value has 3 columns`) whenever it was
+  given a completely empty dataframe - `df_before.apply(..., axis=1)` on
+  zero rows can't infer a Series result and returns an empty DataFrame
+  instead, which then fails the `.loc[:, 'sequence'] = ...` assignment's
+  shape check. This path was unreachable before (recombination candidates
+  always produced at least one avoidance site), so the crash never
+  surfaced - until the fix above made "zero sites, all excluded" a real,
+  legitimate outcome. Fixed with an early `if df.empty: return df` guard.
+  Confirmed via `tests/test_constraints.py::test_empty_input_dataframe_does_not_crash`
+  and the same real CLI end-to-end test above (which was crashing before
+  this fix, not just warning).
+
+- **`eso.io_utils.test_input` never validated an ORF/exclusion region's end
+  against the actual sequence it applies to.** Only internal consistency
+  (start<end, ORF length%3==0) was checked - a region string meant for a
+  different or shorter sequence than the one it got matched to (a typo in
+  `--indexes-file`, or a mismatched file/seq_index key) passed validation
+  regardless of whether its end exceeded the real sequence's length.
+  Downstream, Python's forgiving slice semantics (`seq[0:9000]` on a 60nt
+  string just returns 60nt) silently truncated the region with no error or
+  warning anywhere - a misconfigured region for the wrong sequence looked
+  identical to a correctly-configured, shorter one. Fixed by building a
+  `(file_stem, seq_index) -> sequence length` lookup once and checking both
+  ORF and exclusion region ends against it, with a message naming the
+  specific file/sequence and its actual length. An index entry whose key
+  doesn't match any real record is left as-is (a separate, pre-existing
+  leniency - see `eso.io_utils.file_stem`'s docstring) rather than being
+  flagged as a new kind of error here. Confirmed directly
+  (`tests/test_io_utils.py`'s three new `..._past_sequence_end_...` tests).
+
+- **`--num-sites`'s CLI help text was stale**, still describing the
+  removed "...to report/constrain..." behavior after the fix above made it
+  report-only. Updated to match `eso.pipeline.main`'s docstring and the
+  README.
+
+- **A small correctness regression from the overlap-collapse split
+  itself**: `eso.detection.staubility_variant.find_recombination_candidates`
+  moved its all-null-column drop to *before* `num_sites` truncation
+  (instead of after, as the pre-split code did) when the function was torn
+  in two - since "is this column entirely null" can differ between the full
+  candidate set and a truncated subset of it, this could report a different
+  column set for the same finite `num_sites` value than before the split.
+  Moved the null-column drop into `collapse_recombination_sites` (after
+  `num_sites` truncation), matching the original ordering exactly.
+
+Verified via a full pytest run after each fix - 176 tests passing (up from
+170).
+
+## Follow-up: the three items flagged but not silently fixed, addressed
+
+After the audit above, three remaining items were flagged as tradeoffs/gaps
+worth a decision rather than a silent fix. Addressed all three:
+
+- **Duplication in the overlap-collapse split.** `collapse_overlapping_intervals`
+  and `collapse_overlapping_intervals_no_coverage_loss` (`eso.detection._overlap`)
+  were near-identical copies differing only in one drop predicate; likewise
+  `_collapse_overlapping_pairs`/`_collapse_overlapping_pairs_no_coverage_loss`
+  (`eso.detection.recombination`), and `eso.detection.dispatch`'s 8 mode-table
+  wrappers each hand-rolled the same try/KeyError/raise-ValueError block.
+  Generalized all three into one shared implementation each
+  (`_collapse_by_predicate`, `_collapse_pairs_by_predicate`, `_dispatch`),
+  parameterized by which predicate/mode-table to use - no behavior change,
+  confirmed by the full test suite passing unchanged. Left the
+  `find_*_candidates`/`collapse_*_sites`/`*_sites_for_constraints` trio
+  duplicated across `recombination.py`/`slippage.py`/`staubility_variant.py`
+  as-is: the actual detection algorithms in each module are genuinely
+  different (that's the whole point of having two independent
+  implementations), and the only shared part - a 1-2 line composition
+  ("report = collapse(candidates); raw = for_constraints(candidates)") - is
+  too small to be worth a factory abstraction.
+
+- **CSV report vs. actual-corrections divergence.** `recombination_sites.csv`/
+  `slippage_sites.csv` are written from the collapsed, `num_sites`-limited
+  view, while optimization is now (correctly) run against the larger, raw
+  view - so the two could diverge with nothing surfacing it. Added
+  `recombination_sites_corrected.csv`/`slippage_sites_corrected.csv`
+  (written only when `optimize=True`): every candidate that actually
+  received a correction constraint, so a user can check this file, not the
+  report CSV, when accounting for edits in `final_sequence.txt`. Chose this
+  over changing what the existing report CSVs contain (that would dilute
+  their "one representative per distinct site" purpose) or over silently
+  doing nothing (the status quo). Documented in the README and confirmed via
+  `tests/test_pipeline_integration.py` (both that the new CSVs are written
+  when `optimize=True`, and that they're *not* written when `optimize=False`,
+  since nothing was corrected to report on).
+
+- **Constraint-retry budget risk.** `optimize.py`'s constraint-drop retry
+  loop was capped at a fixed 60 rounds - tuned back when `num_sites` capped
+  how many hotspot-avoidance constraints could exist at all. Since
+  constraint-building now uses every raw candidate regardless of
+  `num_sites`, a dense-enough sequence could in principle need more than 60
+  rounds of dropping individually-unsatisfiable constraints, hitting
+  `NoSolutionError("More than 60 hard constraints...")` from exhausting the
+  retry budget alone, not from any real unresolvable conflict. Changed the
+  cap to `max(60, len(cnst))` (computed once, before any constraints are
+  dropped) - unchanged behavior for the common small-constraint case, scales
+  for a larger one. Honesty check on this one: I could not construct a test
+  that actually failed under the old fixed cap - the loop's other retry path
+  (dropping every currently-failing constraint in one round, when DNAChisel's
+  own final check fails without naming a single culprit) handles even ~100
+  simultaneously-unsatisfiable constraints in a handful of rounds regardless.
+  The scaling fix targets the *other* path (DNAChisel naming one specific
+  failing constraint per top-level call, dropping exactly one per round),
+  which I could not force deterministically from the outside to prove the
+  risk is reachable. Kept the fix anyway (safe, no behavior change for the
+  common case) but `tests/test_optimize.py::test_retry_budget_scales_past_the_old_fixed_60_round_cap`
+  is documented as a scale smoke test, not a proven regression reproduction.
+
+Verified via a full pytest run - 178 tests passing (up from 176).

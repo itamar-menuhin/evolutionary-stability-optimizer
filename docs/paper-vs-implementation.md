@@ -40,6 +40,18 @@ Two real differences between what the paper describes and what the current defau
   10 per category. **If you're trying to reproduce behavior described in the paper, pass
   `num_sites=10` (or `--num-sites 10`) explicitly** - the current default does not match
   what the paper describes as the tool's behavior.
+
+  **Update, since a later fix changed what `num_sites` actually limits**: `num_sites` now
+  only limits what gets *reported* (the CSVs / `df_recombination`/`df_slippage` in
+  `suspect_site_extractor`'s return value) - it no longer limits what gets *avoided*
+  during optimization, which always uses every detected candidate regardless of
+  `num_sites` (see `docs/detector-comparisons.md`'s overlap-collapse coverage-gap entry
+  for why: letting `num_sites` cap constraints too reintroduced a silent-coverage-loss
+  bug). So `--num-sites 10` no longer reproduces "avoidance of the 10 most probable sites"
+  as the paper describes it - it only reproduces the reporting behavior, not the
+  avoidance/optimization behavior. There is currently no flag that limits optimization
+  itself to the top-N sites per category; reproducing the paper's exact avoidance
+  behavior would need that added back deliberately, not inferred from `num_sites`.
 - **The current *default* recombination-detection algorithm may not be the one the paper
   describes.** The paper's pseudocode (step 3, Methods) describes finding recombination
   sites by: "*Divide the sequence into subsequences of length 16, find those appearing

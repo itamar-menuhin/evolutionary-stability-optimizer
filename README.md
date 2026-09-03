@@ -121,7 +121,12 @@ canonical algorithm. Both are routed through `eso.detection.dispatch`
 (`find_recombination_sites(seq, num_sites, mode="thorough" | "fast")` and
 `find_slippage_sites(seq, num_sites, mode="default" | "fast")`), also exposed via
 `eso.pipeline.main(..., recombination_mode=..., slippage_mode=...)` /
-`eso-optimize --recombination-mode --slippage-mode`. See
+`eso-optimize --recombination-mode --slippage-mode`. Both of these collapse overlapping
+candidates down to one representative per distinct site - a human-facing report/count
+view, and what `--num-sites`/`num_sites` limits. `eso.pipeline.main`/`eso-optimize` always
+build correction constraints from every detected candidate regardless (see "Using ESO as
+a library" below if you're calling detection yourself, and
+`docs/detector-comparisons.md`'s coverage-gap entry for why). See
 [`docs/detector-comparisons.md`](docs/detector-comparisons.md) for the tradeoffs,
 benchmarks, and bugs found while comparing them - recombination's two modes trade off
 sensitivity for speed, but slippage's are fully equivalent in what they detect (a pure
@@ -181,7 +186,17 @@ eso-optimize --input-folder path/to/fasta_files --output-path path/to/output --o
 For each FASTA/GenBank file found in `input_folder`, this writes to `output_path/<file_stem>/`:
 
 - `final_sequence.txt` - the optimized sequence, plus CAI-before/after and edit-count stats.
-- `recombination_sites.csv` / `slippage_sites.csv` / `motif_sites.csv` - detected hotspots.
+- `recombination_sites.csv` / `slippage_sites.csv` / `motif_sites.csv` - detected hotspots,
+  one row per distinct site (a human-facing report, limited by `--num-sites` if given).
+- `recombination_sites_corrected.csv` / `slippage_sites_corrected.csv` (only written when
+  `optimize` is on) - every candidate that actually received a correction constraint during
+  optimization. This can list more rows than the report CSVs above - collapsing several
+  overlapping candidates down to one representative per distinct site is the right call for
+  a report, but optimization still needs to correct every one of them individually to avoid
+  silently leaving part of a real hotspot unconstrained (see
+  [`docs/detector-comparisons.md`](docs/detector-comparisons.md)'s overlap-collapse
+  coverage-gap entry). Check this file, not the report CSVs, if you're trying to account
+  for every edit in `final_sequence.txt`.
 - `sequence_comparison.docx` - a diff view of original vs. optimized sequence (if the
   `docx-report` extra is installed).
 
@@ -212,12 +227,16 @@ seq = "ATG" + "GCT" * 15 + "TAA"  # any DNA string you already have
 #    want codon/GC optimization, with no hotspot avoidance)
 sites = suspect_site_extractor(seq, compute_motifs=False, num_sites=50)
 
-# 2. optimize, avoiding what was detected
+# 2. optimize, avoiding what was detected - use the _raw dataframes, NOT
+#    sites["df_recombination"]/sites["df_slippage"] (those are collapsed to one
+#    representative per distinct site, for a human-facing report/count - using
+#    them here can silently leave part of a real, only-partially-overlapping
+#    hotspot with no correction at all; see docs/detector-comparisons.md)
 final_seq, objectives_summary, num_edits = optimization_engine(
     seq,
     organism_name="e_coli",
-    df_recombination=sites["df_recombination"],
-    df_slippage=sites["df_slippage"],
+    df_recombination=sites["df_recombination_raw"],
+    df_slippage=sites["df_slippage_raw"],
 )
 ```
 
@@ -226,6 +245,8 @@ next (write it out yourself, pass it to another function, etc.) - nothing here t
 the filesystem. `suspect_site_extractor` (also importable as
 `eso.suspect_site_extractor`) is the same detection step `main()` runs internally; call
 it on its own if you only want the hotspot dataframes, with no optimization at all.
+`num_sites` only limits `df_recombination`/`df_slippage` (the reported view) - the `_raw`
+dataframes always include every detected candidate, regardless of `num_sites`.
 
 This composes directly with a custom scoring function - just pass `custom_score_fn=...`
 to `optimization_engine` instead of `organism_name`:
@@ -234,8 +255,8 @@ to `optimization_engine` instead of `organism_name`:
 final_seq, _, num_edits = optimization_engine(
     seq,
     custom_score_fn=my_model.predict,  # any function: whole seq (str) -> a number, higher = better
-    df_recombination=sites["df_recombination"],
-    df_slippage=sites["df_slippage"],
+    df_recombination=sites["df_recombination_raw"],
+    df_slippage=sites["df_slippage_raw"],
 )
 ```
 
