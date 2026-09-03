@@ -1,12 +1,33 @@
 [tool.poetry]
-name = "eso"
+# The PyPI distribution name (what `pip install ...` uses) is
+# "evolutionary-stability-optimizer" - plain "eso" was already taken on PyPI
+# by an unrelated package. This does NOT change the importable package name:
+# `packages = [{ include = "eso" }]` below still installs a module you
+# `import eso` exactly as before - only the install command changes.
+name = "evolutionary-stability-optimizer"
 version = "0.1.0"
 description = "Evolutionary Stability Optimizer (ESO) - detects and removes hypermutable sites (recombination, slippage, methylation hotspots) from engineered DNA sequences while preserving translation and codon usage."
 authors = ["Itamar Menuhin"]
 license = "MIT"
 readme = "README.md"
+homepage = "https://github.com/itamar-menuhin/evolutionary-stability-optimizer"
+repository = "https://github.com/itamar-menuhin/evolutionary-stability-optimizer"
+documentation = "https://github.com/itamar-menuhin/evolutionary-stability-optimizer#readme"
+keywords = ["synthetic-biology", "dna", "codon-optimization", "genetic-stability", "bioinformatics"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 packages = [{ include = "eso" }]
 include = ["eso/data/*.csv"]
+
+[tool.poetry.urls]
+"Bug Tracker" = "https://github.com/itamar-menuhin/evolutionary-stability-optimizer/issues"
 
 [tool.poetry.dependencies]
 python = "^3.11"

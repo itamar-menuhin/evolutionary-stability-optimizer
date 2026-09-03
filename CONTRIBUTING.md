@@ -93,6 +93,56 @@ supports arbitrary NCBI TaxIDs/species names via `python-codon-tables` for
 anything in that database, so a custom table is only needed for organisms
 outside it.
 
+## Releasing a new version (maintainers)
+
+Publishing to PyPI (`pip install evolutionary-stability-optimizer`) happens
+via `.github/workflows/publish.yml`, triggered by publishing a GitHub
+Release - nothing publishes automatically on every push to `master`.
+
+**One-time setup** (already done for this repo, documented here so it's
+reproducible if the project ever moves, and so a new maintainer understands
+what's wired up and why):
+
+1. On [pypi.org](https://pypi.org), under Account Settings ->
+   [Publishing](https://pypi.org/manage/account/publishing/), add a
+   "pending" trusted publisher (this works even before the project's first
+   release exists):
+   - PyPI Project Name: `evolutionary-stability-optimizer`
+   - Owner: `itamar-menuhin`
+   - Repository name: `evolutionary-stability-optimizer`
+   - Workflow name: `publish.yml`
+   - Environment name: `pypi`
+
+   This uses PyPI's [Trusted Publishing](https://docs.pypi.org/trusted-publishers/)
+   (OIDC) - no API token is ever generated, stored as a GitHub secret, or
+   handled by anyone. GitHub Actions proves its identity to PyPI directly at
+   publish time.
+2. A GitHub Environment named `pypi` exists on this repo (Settings ->
+   Environments) - the workflow's `publish` job only runs under it. You can
+   optionally add required reviewers to that environment for an extra
+   manual-approval step before any publish actually runs.
+
+**To cut a release:**
+
+1. Bump `version` in `pyproject.toml` (`[tool.poetry]` section) -
+   [Semantic Versioning](https://semver.org/): patch for bug fixes, minor
+   for backward-compatible additions, major for breaking changes (e.g. a
+   removed parameter - this repo has done that before, see
+   `docs/detector-comparisons.md`'s windowed-mode-removal entry).
+2. Commit that version bump, push, and confirm CI is green.
+3. On GitHub, Releases -> Draft a new release. Tag it `v<version>` (e.g.
+   `v0.2.0`, matching `pyproject.toml`), write release notes (what changed
+   since the last release - `docs/detector-comparisons.md` and the commit
+   log are the source for this), and publish it.
+4. Publishing the release triggers `.github/workflows/publish.yml` - watch
+   it under the Actions tab. Once it succeeds, the new version is live on
+   PyPI within a few minutes.
+
+A published version can be [yanked](https://pypi.org/help/#yanked) (marked
+"don't use this, here's why," without deleting it - existing installs
+keep working) but never re-uploaded under the same version number - bump
+the version again for any correction, however small.
+
 ## Reporting a bug
 
 Open a GitHub issue with: the exact input sequence (or the smallest one

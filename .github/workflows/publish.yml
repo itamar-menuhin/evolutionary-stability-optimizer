@@ -1,0 +1,50 @@
+name: Publish to PyPI
+
+# Runs when a GitHub Release is published (Releases -> Draft a new release ->
+# Publish release). Nothing publishes to PyPI on every push - only an
+# explicit, human-created release triggers this.
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # A GitHub Environment named "pypi" - configure it under this repo's
+    # Settings -> Environments once the PyPI-side trusted publisher is set
+    # up (see CONTRIBUTING.md's "Releasing a new version" section). Using an
+    # environment lets you optionally require manual approval before a
+    # publish actually runs, as an extra safety net beyond "someone published
+    # a GitHub Release".
+    environment: pypi
+    permissions:
+      # required for PyPI's Trusted Publishing (OIDC) - no API token/secret
+      # is stored in this repo at all.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
