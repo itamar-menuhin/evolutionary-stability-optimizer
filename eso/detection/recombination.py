@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from Levenshtein import distance as levenshtein_distance
 
-from eso.detection._overlap import ranges_overlap
+from eso.detection._overlap import ranges_overlap, range_contains
 from eso.sequence_utils import add_backward_sites, shorten_sequences
 
 # matches the columns actually produced by the non-empty path below
@@ -172,15 +172,16 @@ def calc_recombination_score(location_delta, site_length):
     return np.log10(recombination_probability)
 
 
-def _collapse_overlapping_pairs(df_pairs):
-    """Different seed 16-mers for the same real hotspot converge, via
-    elongation, to slightly different (start, end) extents rather than one
-    canonical pair - so even exact-coordinate dedup leaves several
-    near-identical rows per real site. Collapse them via non-max suppression:
-    walk pairs in descending score order, keeping a pair only if BOTH its
-    site_1 and site_2 ranges are still free of an already-kept pair's
-    corresponding range. Requiring overlap on both sides (not just one) avoids
-    merging two genuinely distinct hotspots that happen to share one site.
+def _collapse_pairs_by_predicate(df_pairs, should_drop_range):
+    """Shared non-max-suppression walk for site-pairs: process pairs in
+    descending score order, dropping a pair exactly when `should_drop_range`
+    is True of BOTH its site_1 and site_2 ranges against some already-kept
+    pair's corresponding ranges, otherwise keeping it. Requiring agreement on
+    both sides (not just one) avoids merging two genuinely distinct hotspots
+    that happen to share one site. The two functions below differ only in
+    which predicate they pass in (overlap vs. full containment) - see
+    eso.detection._overlap._collapse_by_predicate for the same pattern,
+    one level down, on plain (non-paired) ranges.
     """
     kept_rows = []
     kept_ranges = []  # list of ((start_1,end_1), (start_2,end_2))
@@ -188,7 +189,10 @@ def _collapse_overlapping_pairs(df_pairs):
     for _, row in df_pairs.sort_values('log10_prob_recombination_ecoli', ascending=False).iterrows():
         range_1 = (row.start_1, row.end_1)
         range_2 = (row.start_2, row.end_2)
-        if any(ranges_overlap(range_1, r1) and ranges_overlap(range_2, r2) for r1, r2 in kept_ranges):
+        if any(
+            should_drop_range(range_1, r1) and should_drop_range(range_2, r2)
+            for r1, r2 in kept_ranges
+        ):
             continue
         kept_rows.append(row)
         kept_ranges.append((range_1, range_2))
@@ -196,13 +200,65 @@ def _collapse_overlapping_pairs(df_pairs):
     return pd.DataFrame(kept_rows, columns=df_pairs.columns) if kept_rows else df_pairs.iloc[0:0]
 
 
-def find_recombination_sites(seq, num_sites=np.inf):
-    """Find candidate recombination (RMD) hotspots in `seq`.
+def _collapse_overlapping_pairs(df_pairs):
+    """Different seed 16-mers for the same real hotspot converge, via
+    elongation, to slightly different (start, end) extents rather than one
+    canonical pair - so even exact-coordinate dedup leaves several
+    near-identical rows per real site. Collapse them via non-max suppression:
+    walk pairs in descending score order, keeping a pair only if BOTH its
+    site_1 and site_2 ranges are still free of an already-kept pair's
+    corresponding range.
+    """
+    return _collapse_pairs_by_predicate(df_pairs, should_drop_range=ranges_overlap)
+
+
+def _collapse_overlapping_pairs_no_coverage_loss(df_pairs):
+    """Like _collapse_overlapping_pairs, but only drops a pair when BOTH its
+    site_1 and site_2 ranges are FULLY CONTAINED in an already-kept pair's
+    corresponding ranges - not merely overlapping them. See
+    eso.detection._overlap.collapse_overlapping_intervals_no_coverage_loss
+    for why: plain overlap-based NMS can silently drop a genuinely distinct,
+    only-partially-overlapping hotspot pair, leaving whatever part of its
+    span isn't covered by the kept pair with no correction constraint. Rows
+    returned here can legitimately still overlap each other - use this to
+    build constraints, never for a "how many distinct sites" count (use
+    _collapse_overlapping_pairs for that instead, via collapse_recombination_sites).
+    """
+    def _kept_fully_covers_current(current_range, kept_range):
+        return range_contains(outer=kept_range, inner=current_range)
+
+    return _collapse_pairs_by_predicate(df_pairs, should_drop_range=_kept_fully_covers_current)
+
+
+def recombination_sites_for_constraints(df_pairs):
+    """Reduce raw recombination candidates (see find_recombination_candidates)
+    for feeding into correction-constraint building
+    (recombination_to_multiple_avoidance_sites), WITHOUT the coverage-loss
+    risk plain non-max suppression (collapse_recombination_sites) has - see
+    _collapse_overlapping_pairs_no_coverage_loss and
+    eso.detection.slippage.slippage_sites_for_constraints for the concrete
+    failure this avoids.
+    """
+    if df_pairs.shape[0] == 0:
+        return df_pairs
+    return _collapse_overlapping_pairs_no_coverage_loss(df_pairs)
+
+
+def find_recombination_candidates(seq):
+    """Find every candidate recombination (RMD) site-pair in `seq`, WITHOUT
+    collapsing overlapping pairs down to one representative per real hotspot.
 
     A pair of sites is a candidate if both are >=16nt, within Levenshtein
-    distance 1 of each other, and non-overlapping. Returns a dataframe sorted
-    by descending mutation risk (`log10_prob_recombination_ecoli`), limited to
-    `num_sites` distinct site-pairs if given.
+    distance 1 of each other, and non-overlapping.
+
+    This is the shared base both find_recombination_sites (collapsed report
+    view) and recombination_sites_for_constraints (constraint-building view)
+    are built from.
+
+    Returns a dataframe sorted by descending mutation risk
+    (`log10_prob_recombination_ecoli`), not limited by `num_sites` (that only
+    makes sense for the collapsed, human-facing view - see
+    find_recombination_sites/collapse_recombination_sites).
     """
     empty_df = pd.DataFrame(columns=RECOMBINATION_COLUMNS)
 
@@ -223,15 +279,43 @@ def find_recombination_sites(seq, num_sites=np.inf):
 
     df_pairs = df_pairs[df_pairs.log10_prob_recombination_ecoli > -9]
 
-    # collapse the many candidate-seed rows that converge (via elongation) on
-    # the same or overlapping real hotspot down to one representative row each
+    for col in ['start_1', 'end_1', 'start_2', 'end_2', 'location_delta', 'site_length']:
+        df_pairs.loc[:, col] = df_pairs[col].astype(int)
+
+    return df_pairs.sort_values('log10_prob_recombination_ecoli', ascending=False).reset_index(drop=True)
+
+
+def collapse_recombination_sites(df_pairs, num_sites=np.inf):
+    """Collapse raw recombination candidates (see find_recombination_candidates)
+    down to one representative pair per group of overlapping pairs, for a
+    human-facing "distinct sites" report or count - NOT for building
+    correction constraints (see recombination_sites_for_constraints instead -
+    a dropped pair's uniquely-covered span would otherwise get no fix).
+
+    The many candidate-seed rows that converge (via elongation) on the same
+    or overlapping real hotspot are collapsed down to one representative row
+    each.
+    """
+    if df_pairs.shape[0] == 0:
+        return df_pairs
+
     df_pairs = _collapse_overlapping_pairs(df_pairs)
     df_pairs = df_pairs.sort_values('log10_prob_recombination_ecoli', ascending=False)
 
     if num_sites < np.inf:
         df_pairs = df_pairs.head(int(num_sites))
 
-    for col in ['start_1', 'end_1', 'start_2', 'end_2', 'location_delta', 'site_length']:
-        df_pairs.loc[:, col] = df_pairs[col].astype(int)
-
     return df_pairs
+
+
+def find_recombination_sites(seq, num_sites=np.inf):
+    """Find recombination (RMD) hotspots in `seq`, collapsed to one
+    representative pair per real hotspot (see collapse_recombination_sites)
+    and limited to `num_sites` distinct site-pairs if given - the
+    human-facing report/count view. Do NOT use this to build correction
+    constraints (see find_recombination_candidates).
+
+    Returns a dataframe sorted by descending mutation risk
+    (`log10_prob_recombination_ecoli`).
+    """
+    return collapse_recombination_sites(find_recombination_candidates(seq), num_sites)

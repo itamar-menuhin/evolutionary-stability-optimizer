@@ -66,3 +66,37 @@ def test_slippage_default_and_fast_modes_agree():
 def test_slippage_unknown_mode_raises():
     with pytest.raises(ValueError, match="Unknown slippage mode"):
         find_slippage_sites("ACGTACGTACGT", mode="nonexistent")
+
+
+def test_candidates_and_for_constraints_route_to_both_modes():
+    # These are the functions eso.pipeline.suspect_site_extractor actually
+    # uses now - just confirm every mode routes without error and produces a
+    # dataframe with the expected columns, for both detector categories.
+    from eso.detection.dispatch import (
+        find_recombination_candidates, find_slippage_candidates,
+        collapse_recombination_sites, collapse_slippage_sites,
+        recombination_sites_for_constraints, slippage_sites_for_constraints,
+    )
+
+    site = "ACGTGGCATTAGCTAGCCTA"
+    seq = "ATGCATGCAT" + site + SPACER + site + "TTGGCCAATT"
+
+    for mode in ("thorough", "fast"):
+        candidates = find_recombination_candidates(seq, mode=mode)
+        assert collapse_recombination_sites(candidates, mode=mode).shape[0] >= 1
+        assert recombination_sites_for_constraints(candidates, mode=mode).shape[0] >= 1
+
+    slippage_seq = "ATGCTAAT" + "GCGCGCGC" + "TTAGGCATGCCTAGC"
+    for mode in ("default", "fast"):
+        candidates = find_slippage_candidates(slippage_seq, mode=mode)
+        assert collapse_slippage_sites(candidates, mode=mode).shape[0] >= 1
+        assert slippage_sites_for_constraints(candidates, mode=mode).shape[0] >= 1
+
+
+def test_candidates_unknown_mode_raises():
+    from eso.detection.dispatch import find_recombination_candidates, find_slippage_candidates
+
+    with pytest.raises(ValueError, match="Unknown recombination mode"):
+        find_recombination_candidates("ACGTACGTACGT", mode="nonexistent")
+    with pytest.raises(ValueError, match="Unknown slippage mode"):
+        find_slippage_candidates("ACGTACGTACGT", mode="nonexistent")

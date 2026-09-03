@@ -10,7 +10,14 @@ import numpy as np
 import pandas as pd
 
 from eso.detection.common_motifs import load_common_motifs
-from eso.detection.dispatch import find_recombination_sites, find_slippage_sites
+from eso.detection.dispatch import (
+    collapse_recombination_sites,
+    collapse_slippage_sites,
+    find_recombination_candidates,
+    find_slippage_candidates,
+    recombination_sites_for_constraints,
+    slippage_sites_for_constraints,
+)
 from eso.detection.methylation import load_motifs, find_motif_sites
 from eso.io_utils import file_opener, file_stem, relevant_file_paths, test_input
 from eso.optimize import optimization_engine
@@ -23,7 +30,21 @@ def suspect_site_extractor(target_seq, compute_motifs, num_sites, motifs_path=No
                             slippage_mode='default'):
     """Detect recombination and slippage sites (and, if `compute_motifs`, methylation
     motif sites) in `target_seq`. Returns a dict of dataframes keyed by
-    'df_recombination', 'df_slippage', and optionally 'df_motifs'.
+    'df_recombination', 'df_slippage', and optionally 'df_motifs' - each
+    collapsed to one representative per distinct site and limited to
+    `num_sites`, for reporting - plus 'df_recombination_raw'/'df_slippage_raw',
+    a reduced-but-not-collapsed view (see
+    eso.detection.slippage.slippage_sites_for_constraints) meant for building
+    correction constraints from instead.
+
+    Detection itself only runs once per category; the report and
+    constraint-building views are both derived from that single run. Use the
+    _raw dataframes (not the collapsed ones) to build correction constraints:
+    collapsing (as the report view does) can silently drop a genuinely
+    distinct, only-partially-overlapping hotspot entirely, leaving the region
+    it uniquely covered with no fix. `num_sites` is report-only for the same
+    reason - limiting it would reintroduce that exact silent-coverage-loss
+    risk for whichever candidates it cuts.
 
     recombination_mode: see eso.detection.dispatch.find_recombination_sites -
         "thorough" (default, Levenshtein-tolerant) or "fast" (exact-match only).
@@ -34,9 +55,15 @@ def suspect_site_extractor(target_seq, compute_motifs, num_sites, motifs_path=No
         "dam", "dcm") to include alongside any `motifs_path` file. At least
         one of `motifs_path`/`common_motifs` is required if `compute_motifs`.
     """
+    df_recombination_candidates = find_recombination_candidates(target_seq, mode=recombination_mode)
+    df_slippage_candidates = find_slippage_candidates(target_seq, mode=slippage_mode)
+
     sites_collector = {
-        'df_recombination': find_recombination_sites(target_seq, num_sites, mode=recombination_mode),
-        'df_slippage': find_slippage_sites(target_seq, num_sites, mode=slippage_mode),
+        'df_recombination': collapse_recombination_sites(
+            df_recombination_candidates, num_sites, mode=recombination_mode),
+        'df_slippage': collapse_slippage_sites(df_slippage_candidates, num_sites, mode=slippage_mode),
+        'df_recombination_raw': recombination_sites_for_constraints(df_recombination_candidates, mode=recombination_mode),
+        'df_slippage_raw': slippage_sites_for_constraints(df_slippage_candidates, mode=slippage_mode),
     }
 
     if compute_motifs:
@@ -71,7 +98,9 @@ def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
     `output_path/<file_stem>/`.
     """
     recombination_collector = []
+    recombination_raw_collector = []
     slippage_collector = []
+    slippage_raw_collector = []
     motifs_collector = []
     sequences_for_doc = []
 
@@ -110,15 +139,28 @@ def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
             curr_seq, compute_motifs, num_sites, motifs_path, common_motifs=common_motifs,
             recombination_mode=recombination_mode, slippage_mode=slippage_mode)
 
+        # reporting (CSV) uses the collapsed, num_sites-limited view; the
+        # optimizer is given the raw, uncollapsed, unlimited view instead, so a
+        # genuinely distinct hotspot that only partially overlaps a
+        # higher-scoring one still gets its own correction constraint - see
+        # suspect_site_extractor's docstring and docs/detector-comparisons.md.
         df_recombination = curr_sites_collector['df_recombination']
         if len(df_recombination) > 0:
             df_recombination.loc[:, 'sequence_number'] = str(ii)
             recombination_collector.append(df_recombination)
+        df_recombination_raw = curr_sites_collector['df_recombination_raw']
+        if len(df_recombination_raw) > 0:
+            df_recombination_raw.loc[:, 'sequence_number'] = str(ii)
+            recombination_raw_collector.append(df_recombination_raw)
 
         df_slippage = curr_sites_collector['df_slippage']
         if len(df_slippage) > 0:
             df_slippage.loc[:, 'sequence_number'] = str(ii)
             slippage_collector.append(df_slippage)
+        df_slippage_raw = curr_sites_collector['df_slippage_raw']
+        if len(df_slippage_raw) > 0:
+            df_slippage_raw.loc[:, 'sequence_number'] = str(ii)
+            slippage_raw_collector.append(df_slippage_raw)
 
         df_motifs = pd.DataFrame()
         if compute_motifs:
@@ -129,7 +171,7 @@ def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
 
         if optimize:
             curr_seq, obj_description, num_edits = optimization_engine(
-                curr_seq, df_recombination=df_recombination, df_slippage=df_slippage, df_motifs=df_motifs,
+                curr_seq, df_recombination=df_recombination_raw, df_slippage=df_slippage_raw, df_motifs=df_motifs,
                 mini_gc=mini_gc, maxi_gc=maxi_gc, method=method, organism_name=organism_name,
                 custom_score_fn=custom_score_fn,
                 custom_score_minimize=custom_score_minimize,
@@ -160,9 +202,25 @@ def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
         pd.concat(recombination_collector, ignore_index=True).to_csv(
             path.join(curr_output_path, 'recombination_sites.csv'), index=False)
 
+    if optimize and recombination_raw_collector:
+        # every candidate actually given a correction constraint during
+        # optimization, not just the collapsed "one representative per
+        # distinct site" view above - since those two views can now
+        # legitimately differ (see suspect_site_extractor's docstring and
+        # docs/detector-comparisons.md), this is what to check against
+        # final_sequence.txt if a diff shows an edit with no corresponding
+        # row in recombination_sites.csv.
+        pd.concat(recombination_raw_collector, ignore_index=True).to_csv(
+            path.join(curr_output_path, 'recombination_sites_corrected.csv'), index=False)
+
     if slippage_collector:
         pd.concat(slippage_collector, ignore_index=True).to_csv(
             path.join(curr_output_path, 'slippage_sites.csv'), index=False)
+
+    if optimize and slippage_raw_collector:
+        # see the recombination_sites_corrected.csv comment above.
+        pd.concat(slippage_raw_collector, ignore_index=True).to_csv(
+            path.join(curr_output_path, 'slippage_sites_corrected.csv'), index=False)
 
     if compute_motifs and motifs_collector:
         pd.concat(motifs_collector, ignore_index=True).to_csv(
@@ -193,7 +251,12 @@ def main(input_folder=None, output_path=None, compute_motifs=False, num_sites=np
         Whether to also detect methylation motif sites (needs `motifs_path` and/or
         `common_motifs`).
     num_sites: int or float('inf')
-        Max number of hotspots to report/constrain per category. Default: all.
+        Max number of hotspots to report (in the CSVs/collapsed dataframes)
+        per category. Default: all. Does NOT limit how many correction
+        constraints are built during optimization - every detected candidate
+        is always given a constraint, regardless of `num_sites`, since
+        limiting that too could silently leave part of a genuine hotspot
+        unconstrained (see eso.pipeline.suspect_site_extractor).
     motifs_path: str or None
         Path to a MEME-minimal-format PSSM file.
     common_motifs: list of str or None

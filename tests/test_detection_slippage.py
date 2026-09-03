@@ -1,4 +1,10 @@
-from eso.detection.slippage import find_slippage_sites, modify_df_slippage
+from eso.detection.slippage import (
+    find_slippage_sites,
+    find_slippage_candidates,
+    collapse_slippage_sites,
+    slippage_sites_for_constraints,
+    modify_df_slippage,
+)
 
 
 def test_finds_dinucleotide_repeat():
@@ -88,6 +94,62 @@ def test_adjacent_distinct_repeats_are_both_reported():
     t_run = df[df.sequence.str.contains("TTT")]
     assert not t_run.empty
     assert t_run.iloc[0].num_base_units == 300
+
+
+def test_overlapping_but_not_nested_sites_both_kept_for_constraints():
+    # Regression test for a real coverage-gap bug: a length-2 site over
+    # [0, 10) ("CACACACACA", 5 units) and a length-3 site over [8, 20)
+    # ("CAACAACAACAA", 4 units) genuinely overlap only at [8, 10) - neither
+    # contains the other. The length-2 site scores higher
+    # (-4.434 vs -4.497), so collapse_slippage_sites (plain non-max
+    # suppression, used for the human-facing report) correctly keeps only
+    # it - but slippage_sites_for_constraints (used to build correction
+    # constraints) must keep BOTH, since positions [10, 20) are only ever
+    # covered by the length-3 site.
+    seq = "CACACACACA" + "ACAACAACAA"  # == "CACACACACAACAACAACAA", 20nt
+    assert seq[8:10] == "CA" and seq[8:20] == "CAACAACAACAA"  # sanity-check construction
+
+    candidates = find_slippage_candidates(seq)
+    length_2_site = candidates[(candidates.start == 0) & (candidates.end == 10)]
+    length_3_site = candidates[(candidates.start == 8) & (candidates.end == 20)]
+    assert not length_2_site.empty and not length_3_site.empty
+
+    reported = collapse_slippage_sites(candidates)
+    assert reported.shape[0] == 1
+    assert (reported.iloc[0].start, reported.iloc[0].end) == (0, 10)  # higher-scoring site only
+
+    for_constraints = slippage_sites_for_constraints(candidates)
+    # some further phase-shifted readings of the length-3 repeat also survive
+    # (same phenomenon as "GCGCGCGC"'s 1-shifted "CGCGCG" reading elsewhere in
+    # this file) - the property that actually matters is that nothing between
+    # 0 and 20 is left uncovered, unlike the collapsed/reported view above,
+    # which only covers [0, 10).
+    covered = set()
+    for row in for_constraints.itertuples():
+        covered.update(range(row.start, row.end))
+    assert covered == set(range(0, 20))
+
+
+def test_optimization_engine_disrupts_both_overlapping_but_distinct_sites():
+    # End-to-end version of the test above: before the fix, only the
+    # length-2 site's constraint would ever be built (via
+    # find_slippage_sites' collapsed output), so positions [10, 20) - real
+    # enough to be an independently-detected hotspot - would survive
+    # optimization completely untouched.
+    from eso.optimize import optimization_engine
+
+    hotspot = "CACACACACA" + "ACAACAACAA"  # 20nt, as in the test above
+    seq = "ATG" + hotspot + "AAAGGGCCCTTTAAAGGGCCC" + "TAA"  # padding keeps codon optimization non-trivial
+
+    df_slippage = slippage_sites_for_constraints(find_slippage_candidates(hotspot))
+    df_slippage.loc[:, 'start'] += 3  # shift into the padded seq's coordinate frame
+    df_slippage.loc[:, 'end'] += 3
+
+    final_seq, _, num_edits = optimization_engine(seq, df_slippage=df_slippage, organism_name="kompas")
+
+    assert num_edits > 0
+    assert final_seq[3:13] != seq[3:13]     # the length-2 site's span, [0, 10) in hotspot coords
+    assert final_seq[11:23] != seq[11:23]   # the length-3 site's span, [8, 20) in hotspot coords
 
 
 def test_modify_df_slippage_splits_into_alternating_units():

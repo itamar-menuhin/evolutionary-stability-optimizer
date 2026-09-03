@@ -27,15 +27,24 @@ import numpy as np
 import pandas as pd
 from sklearn.feature_extraction.text import CountVectorizer
 
-from eso.detection._overlap import collapse_overlapping_intervals
+from eso.detection._overlap import collapse_overlapping_intervals, collapse_overlapping_intervals_no_coverage_loss
 
 
 def genome_cutter(start, end, seq):
     return seq[start:end]
 
 
-def find_recombination_sites(seq, num_sites=np.inf):
-    """ngram-counting variant of recombination (RMD) hotspot detection."""
+def find_recombination_candidates(seq):
+    """ngram-counting variant of recombination (RMD) hotspot detection.
+
+    Unlike eso.detection.recombination's variant, this one never collapses
+    overlapping pairs (it only merges exact back-to-back 16-mer matches into
+    one site, which is a different, lossless operation) - so its output is
+    already the raw/candidate view. Kept as a separate name from
+    find_recombination_sites anyway, for a consistent candidates/collapsed
+    pair of names across both detector implementations - see
+    eso.detection.dispatch.
+    """
     vectorizer = CountVectorizer(analyzer='char_wb', ngram_range=(16, 16))
     counter = vectorizer.fit_transform([seq]).toarray()
 
@@ -90,8 +99,24 @@ def find_recombination_sites(seq, num_sites=np.inf):
         1 + b * df_recombination['site_length'] + c * df_recombination['location_delta'])
     df_recombination.loc[:, 'log10_prob_recombination_ecoli'] = np.log10((base ** exponent) * scale)
 
-    df_recombination = df_recombination.sort_values('log10_prob_recombination_ecoli', ascending=False)
+    return df_recombination.sort_values('log10_prob_recombination_ecoli', ascending=False).reset_index(drop=True)
 
+
+def collapse_recombination_sites(df_recombination, num_sites=np.inf):
+    """No-op collapse: this detector never produces overlapping-but-distinct
+    pairs the way eso.detection.recombination's does (it only merges exact
+    back-to-back matches, already handled in find_recombination_candidates),
+    so there is nothing to collapse here - just applies `num_sites` and drops
+    any column that's entirely null.
+
+    The null-column drop happens here (on the num_sites-limited report view),
+    not in find_recombination_candidates, matching the original pre-split
+    behavior exactly: which columns are "entirely null" can differ between
+    the full candidate set and a num_sites-limited subset of it, so doing
+    this before truncating (as an earlier version of this split briefly did)
+    could report a different column set for the same `num_sites` value than
+    before the candidates/collapse split existed.
+    """
     if num_sites < np.inf:
         df_recombination = df_recombination.head(int(num_sites))
 
@@ -100,6 +125,25 @@ def find_recombination_sites(seq, num_sites=np.inf):
             del df_recombination[col]
 
     return df_recombination
+
+
+def recombination_sites_for_constraints(df_recombination):
+    """Identity: this detector never collapses overlapping pairs in the first
+    place (see collapse_recombination_sites), so its raw candidates are
+    already the constraint-building view - kept as a same-named counterpart
+    to eso.detection.recombination's version so eso.detection.dispatch can
+    call either implementation uniformly.
+    """
+    return df_recombination
+
+
+def find_recombination_sites(seq, num_sites=np.inf):
+    """ngram-counting variant of recombination (RMD) hotspot detection,
+    limited to `num_sites` if given. See find_recombination_candidates -
+    this detector never needs to collapse, so this is only a thin
+    num_sites-limiting wrapper.
+    """
+    return collapse_recombination_sites(find_recombination_candidates(seq), num_sites)
 
 
 def find_slippage_sites_length_l(seq, length):
@@ -166,8 +210,13 @@ def find_slippage_sites_length_l(seq, length):
     return df_slippage
 
 
-def find_slippage_sites(seq, num_sites=np.inf):
-    """ngram/frameshift-scan variant of slippage (SSR) hotspot detection."""
+def find_slippage_candidates(seq):
+    """ngram/frameshift-scan variant of slippage (SSR) hotspot detection -
+    every candidate, WITHOUT collapsing overlapping ones down to one
+    representative per physical site. See
+    eso.detection.slippage.find_slippage_candidates for why constraint-
+    building must use this, not find_slippage_sites.
+    """
     slippage_sites_list = [find_slippage_sites_length_l(seq, length) for length in range(1, 16)]
     df_slippage = pd.concat(slippage_sites_list, ignore_index=True)[['start', 'end', 'length_base_unit', 'sequence']]
 
@@ -184,12 +233,31 @@ def find_slippage_sites(seq, num_sites=np.inf):
     # optimization pipeline), not inside find_slippage_sites itself - lost
     # when this function was extracted in isolation. Restored here so the
     # function is self-contained and consistent with its sibling
-    # find_recombination_sites above, which does filter internally.
+    # find_recombination_candidates above, which does filter internally.
     df_slippage = df_slippage[df_slippage.log10_prob_slippage_ecoli > -9]
+    return df_slippage.sort_values('log10_prob_slippage_ecoli', ascending=False).reset_index(drop=True)
 
-    # see eso.detection.slippage.find_slippage_sites for why exact-start dedup
-    # isn't enough - phase-shifted/differently-lengthed detections of the same
-    # physical repeat need an overlap-based collapse instead.
+
+def slippage_sites_for_constraints(df_slippage):
+    """Reduce raw slippage candidates (see find_slippage_candidates) for
+    feeding into correction-constraint building, WITHOUT the coverage-loss
+    risk plain non-max suppression (collapse_slippage_sites) has - see
+    eso.detection.slippage.slippage_sites_for_constraints for the concrete
+    failure this avoids. Kept as a same-named counterpart so
+    eso.detection.dispatch can call either implementation uniformly.
+    """
+    return collapse_overlapping_intervals_no_coverage_loss(df_slippage, score_col='log10_prob_slippage_ecoli')
+
+
+def collapse_slippage_sites(df_slippage, num_sites=np.inf):
+    """Collapse raw slippage candidates (see find_slippage_candidates) down to
+    one representative per group of overlapping candidates, for a
+    human-facing "distinct sites" report or count - NOT for building
+    correction constraints (see slippage_sites_for_constraints instead). See
+    eso.detection.slippage's version of this function for why exact-start
+    dedup isn't enough - phase-shifted/differently-lengthed detections of the
+    same physical repeat need an overlap-based collapse instead.
+    """
     df_slippage = collapse_overlapping_intervals(df_slippage, score_col='log10_prob_slippage_ecoli')
     df_slippage = df_slippage.sort_values(['log10_prob_slippage_ecoli', 'length_base_unit'], ascending=[False, False])
 
@@ -197,6 +265,15 @@ def find_slippage_sites(seq, num_sites=np.inf):
         df_slippage = df_slippage.head(int(num_sites))
 
     return df_slippage
+
+
+def find_slippage_sites(seq, num_sites=np.inf):
+    """ngram/frameshift-scan variant of slippage (SSR) hotspot detection,
+    collapsed to one representative per physical site and limited to
+    `num_sites` if given - the human-facing report/count view. Do NOT use
+    this to build correction constraints (see find_slippage_candidates).
+    """
+    return collapse_slippage_sites(find_slippage_candidates(seq), num_sites)
 
 
 def suspect_site_extractor(seq, num_sites=np.inf, extension=''):

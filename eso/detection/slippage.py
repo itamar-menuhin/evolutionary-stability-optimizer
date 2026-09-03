@@ -33,7 +33,7 @@ so every length>1 candidate always passes the -9 filter on its own.
 import numpy as np
 import pandas as pd
 
-from eso.detection._overlap import collapse_overlapping_intervals
+from eso.detection._overlap import collapse_overlapping_intervals, collapse_overlapping_intervals_no_coverage_loss
 
 SLIPPAGE_COLUMNS = ['start', 'end', 'length_base_unit', 'sequence']
 
@@ -125,11 +125,21 @@ def _find_slippage_len_l(seq, length):
     return pd.DataFrame.from_records(data=slippage_sites, columns=['start', 'end', 'sequence', 'length_base_unit'])
 
 
-def find_slippage_sites(seq, num_sites=np.inf):
-    """Find candidate slippage (SSR) hotspots in `seq` across repeat-unit lengths 1-15.
+def find_slippage_candidates(seq):
+    """Find every candidate slippage (SSR) hotspot in `seq` across repeat-unit
+    lengths 1-15, WITHOUT collapsing overlapping candidates down to one
+    representative per physical site.
+
+    This is the shared base both find_slippage_sites (collapsed report view,
+    via collapse_slippage_sites) and slippage_sites_for_constraints
+    (constraint-building view) are built from - see the latter for why
+    building constraints needs something other than plain non-max
+    suppression.
 
     Returns a dataframe sorted by descending mutation risk
-    (`log10_prob_slippage_ecoli`), limited to `num_sites` sites if given.
+    (`log10_prob_slippage_ecoli`), not limited by `num_sites` (that only
+    makes sense for the collapsed, human-facing view - see
+    find_slippage_sites/collapse_slippage_sites).
     """
     slippage_sites_list = [_find_slippage_len1(seq)]
     for length in range(2, 16):
@@ -146,14 +156,55 @@ def find_slippage_sites(seq, num_sites=np.inf):
     )
 
     df_slippage = df_slippage[df_slippage.log10_prob_slippage_ecoli > -9]
+    return df_slippage.sort_values('log10_prob_slippage_ecoli', ascending=False).reset_index(drop=True)
 
-    # different base-unit lengths (and different phase offsets within the same
-    # length) can each detect the same physical repeat as a separate row -
-    # e.g. "GCGCGCGC" is a valid length-2 run starting at position N, AND its
-    # 1-shifted substring "CGCGCG" is a separate valid length-2 run starting
-    # at N+1. Collapsing by exact 'start' alone (the original approach) misses
-    # this, since the rows don't share a start position. Keep one
-    # representative (highest scoring) per group of overlapping ranges instead.
+
+def slippage_sites_for_constraints(df_slippage):
+    """Reduce raw slippage candidates (see find_slippage_candidates) for
+    feeding into correction-constraint building (modify_df_slippage), WITHOUT
+    the coverage-loss risk plain non-max suppression (collapse_slippage_sites)
+    has.
+
+    Regular NMS (`collapse_overlapping_intervals`, used by
+    collapse_slippage_sites) only requires two candidates' ranges to
+    *overlap*, not that one *contain* the other, before dropping the
+    lower-scoring one - so two genuinely distinct, only-partially-overlapping
+    hotspots can have the lower-scoring one dropped entirely, silently
+    leaving the part of its span the higher-scoring one doesn't cover with no
+    correction constraint at all. Concrete case: a length-2 site over
+    [0, 10) and a length-3 site over [8, 20) overlap only at [8, 10) -
+    collapsing keeps whichever scores higher and drops the other completely,
+    so positions [10, 20) (if the length-2 site wins) would get no
+    constraint, even though the length-3 site was a real,
+    independently-detected hotspot. See docs/detector-comparisons.md.
+
+    This uses `collapse_overlapping_intervals_no_coverage_loss` instead: a
+    candidate is only dropped if its ENTIRE range is already covered by a
+    higher-scoring kept candidate - the common case (several detections
+    converging on essentially the same physical site) still collapses down
+    to one row as before, but a candidate sticking out beyond every
+    higher-scoring one it overlaps is kept, so every real hotspot still gets
+    a constraint covering its full extent, not just whatever a single
+    NMS survivor happened to cover.
+    """
+    return collapse_overlapping_intervals_no_coverage_loss(df_slippage, score_col='log10_prob_slippage_ecoli')
+
+
+def collapse_slippage_sites(df_slippage, num_sites=np.inf):
+    """Collapse raw slippage candidates (see find_slippage_candidates) down to
+    one representative per group of overlapping candidates, for a
+    human-facing "distinct sites" report or count - NOT for building
+    correction constraints (see slippage_sites_for_constraints instead - a
+    dropped candidate's uniquely-covered span would otherwise get no fix).
+
+    different base-unit lengths (and different phase offsets within the same
+    length) can each detect the same physical repeat as a separate row -
+    e.g. "GCGCGCGC" is a valid length-2 run starting at position N, AND its
+    1-shifted substring "CGCGCG" is a separate valid length-2 run starting
+    at N+1. Collapsing by exact 'start' alone (an earlier approach) misses
+    this, since the rows don't share a start position. Keep one
+    representative (highest scoring) per group of overlapping ranges instead.
+    """
     df_slippage = collapse_overlapping_intervals(df_slippage, score_col='log10_prob_slippage_ecoli')
     df_slippage = df_slippage.sort_values(['log10_prob_slippage_ecoli', 'length_base_unit'], ascending=[False, False])
 
@@ -161,6 +212,18 @@ def find_slippage_sites(seq, num_sites=np.inf):
         df_slippage = df_slippage.head(int(num_sites))
 
     return df_slippage
+
+
+def find_slippage_sites(seq, num_sites=np.inf):
+    """Find slippage (SSR) hotspots in `seq`, collapsed to one representative
+    per physical site (see collapse_slippage_sites) and limited to
+    `num_sites` if given - the human-facing report/count view. Do NOT use
+    this to build correction constraints (see slippage_sites_for_constraints).
+
+    Returns a dataframe sorted by descending mutation risk
+    (`log10_prob_slippage_ecoli`).
+    """
+    return collapse_slippage_sites(find_slippage_candidates(seq), num_sites)
 
 
 def modify_df_slippage(df_slippage):

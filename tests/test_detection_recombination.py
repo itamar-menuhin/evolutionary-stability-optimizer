@@ -1,6 +1,12 @@
+import pandas as pd
 import pytest
 
-from eso.detection.recombination import find_recombination_sites, calc_recombination_score
+from eso.detection.recombination import (
+    find_recombination_sites,
+    calc_recombination_score,
+    collapse_recombination_sites,
+    recombination_sites_for_constraints,
+)
 
 # non-repetitive spacer: a homopolymer/simple-repeat spacer would itself be a
 # genuine (distinct) slippage/recombination hotspot and pollute row counts.
@@ -64,6 +70,36 @@ def test_distinct_hotspots_are_not_merged_into_each_other():
     found_sequences = set(df.sequence_1) | set(df.sequence_2)
     assert any(site_a in s for s in found_sequences)
     assert any(site_b in s for s in found_sequences)
+
+
+def test_partially_overlapping_pairs_both_kept_for_constraints():
+    # Regression test for the same coverage-gap bug as
+    # eso.detection.slippage's overlapping-but-not-nested case, applied to
+    # recombination pairs: two candidate pairs whose site_1/site_2 ranges
+    # each overlap but neither fully contains the other. Plain non-max
+    # suppression (collapse_recombination_sites, the report view) correctly
+    # keeps only the higher-scoring one - but recombination_sites_for_constraints
+    # must keep both, since the lower-scoring pair's site_2 sticks out beyond
+    # what the higher-scoring one covers.
+    df = pd.DataFrame([
+        {
+            'sequence_1': 'A' * 16, 'start_1': 0, 'end_1': 16,
+            'sequence_2': 'A' * 16, 'start_2': 100, 'end_2': 116,
+            'log10_prob_recombination_ecoli': -1.0,
+        },
+        {
+            'sequence_1': 'A' * 16, 'start_1': 0, 'end_1': 16,
+            'sequence_2': 'A' * 20, 'start_2': 100, 'end_2': 120,  # sticks out past 116
+            'log10_prob_recombination_ecoli': -2.0,
+        },
+    ])
+
+    reported = collapse_recombination_sites(df)
+    assert reported.shape[0] == 1
+    assert reported.iloc[0].end_2 == 116  # higher-scoring pair only
+
+    for_constraints = recombination_sites_for_constraints(df)
+    assert set(for_constraints.end_2) == {116, 120}  # both pairs, [116, 120) not lost
 
 
 def test_calc_recombination_score_decreases_with_distance():
