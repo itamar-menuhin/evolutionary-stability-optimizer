@@ -1701,3 +1701,39 @@ worth a decision rather than a silent fix. Addressed all three:
   is documented as a scale smoke test, not a proven regression reproduction.
 
 Verified via a full pytest run - 178 tests passing (up from 176).
+
+## Property-based (fuzz) testing added for the overlap-collapse logic
+
+Given this module's actual bug history this session (touching-but-adjacent
+ranges, partially-overlapping-but-not-nested ranges - both found by hand-
+constructed edge cases, not by the example-based test suite that existed
+beforehand), added Hypothesis-based property tests
+(`tests/test_detection_overlap_properties.py`,
+`tests/test_detection_slippage_properties.py`) that generate random interval
+sets / random DNA sequences and check invariants that must hold for ANY
+input: no two collapsed rows overlap, the no-coverage-loss reduction never
+drops a row without something covering it (the exact property this session's
+core fix was about), and every detected slippage candidate's `sequence`
+field matches the real substring at its own coordinates.
+
+This immediately found a real issue, on its first run: two candidates tied
+on score, one fully containing the other, would non-deterministically both
+survive or have the smaller one drop, depending purely on which happened to
+appear first in the input dataframe - `sort_values(score_col, ...)` doesn't
+order tied rows at all, so ties fell back to incidental input order (not
+guaranteed stable across pandas versions or runs). Fixed by tiebreaking on
+descending span (the larger, more-inclusive candidate wins ties), with a
+stable sort, in both `eso.detection._overlap._collapse_by_predicate` and
+`eso.detection.recombination._collapse_pairs_by_predicate`.
+
+A second property the fuzzer surfaced turned out to be an invalid test, not
+a bug: "no output row should fully contain another" fails legitimately
+whenever a smaller, higher-scoring candidate and a larger, lower-scoring,
+not-fully-overlapping one both survive - correct behavior (see this
+session's earlier "worked example" scenario), not a defect. Removed that
+assertion from the test suite rather than "fixing" the algorithm to satisfy
+an invariant it was never supposed to guarantee - a reminder that a failing
+property test means "the property doesn't hold," not automatically "the
+code is wrong."
+
+Verified via a full pytest run - 186 tests passing (up from 178).

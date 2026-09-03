@@ -174,19 +174,27 @@ def calc_recombination_score(location_delta, site_length):
 
 def _collapse_pairs_by_predicate(df_pairs, should_drop_range):
     """Shared non-max-suppression walk for site-pairs: process pairs in
-    descending score order, dropping a pair exactly when `should_drop_range`
-    is True of BOTH its site_1 and site_2 ranges against some already-kept
-    pair's corresponding ranges, otherwise keeping it. Requiring agreement on
-    both sides (not just one) avoids merging two genuinely distinct hotspots
-    that happen to share one site. The two functions below differ only in
-    which predicate they pass in (overlap vs. full containment) - see
-    eso.detection._overlap._collapse_by_predicate for the same pattern,
-    one level down, on plain (non-paired) ranges.
+    descending score order (ties broken by descending combined span, then a
+    stable sort, for the same determinism reason documented on
+    eso.detection._overlap._collapse_by_predicate - found via property-based
+    testing on that same-shaped single-range logic, not reproduced here as
+    its own test but the same tiebreak applied preemptively since the walk
+    is structurally identical), dropping a pair exactly when
+    `should_drop_range` is True of BOTH its site_1 and site_2 ranges against
+    some already-kept pair's corresponding ranges, otherwise keeping it.
+    Requiring agreement on both sides (not just one) avoids merging two
+    genuinely distinct hotspots that happen to share one site. The two
+    functions below differ only in which predicate they pass in (overlap vs.
+    full containment).
     """
     kept_rows = []
     kept_ranges = []  # list of ((start_1,end_1), (start_2,end_2))
 
-    for _, row in df_pairs.sort_values('log10_prob_recombination_ecoli', ascending=False).iterrows():
+    combined_span = (df_pairs.end_1 - df_pairs.start_1) + (df_pairs.end_2 - df_pairs.start_2)
+    ordering = df_pairs.assign(_combined_span=combined_span).sort_values(
+        ['log10_prob_recombination_ecoli', '_combined_span'], ascending=[False, False], kind='mergesort')
+
+    for _, row in ordering.iterrows():
         range_1 = (row.start_1, row.end_1)
         range_2 = (row.start_2, row.end_2)
         if any(
@@ -194,7 +202,7 @@ def _collapse_pairs_by_predicate(df_pairs, should_drop_range):
             for r1, r2 in kept_ranges
         ):
             continue
-        kept_rows.append(row)
+        kept_rows.append(row.drop('_combined_span'))
         kept_ranges.append((range_1, range_2))
 
     return pd.DataFrame(kept_rows, columns=df_pairs.columns) if kept_rows else df_pairs.iloc[0:0]

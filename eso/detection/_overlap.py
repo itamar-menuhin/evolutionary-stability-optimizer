@@ -32,20 +32,40 @@ def range_contains(outer, inner):
 
 def _collapse_by_predicate(df, score_col, start_col, end_col, should_drop):
     """Shared non-max-suppression walk: process rows in descending `score_col`
-    order, dropping a row exactly when `should_drop(current_range, kept_range)`
-    is True for some already-kept range, otherwise keeping it. The two public
-    collapse functions below differ only in which predicate they pass in -
-    everything else (the sort, the kept_rows/kept_ranges bookkeeping, the
-    empty-dataframe fallback) is identical between them, so it lives here once.
+    order (ties broken by descending span, then a stable sort, so tied rows
+    process in a fixed, reproducible order - see below), dropping a row
+    exactly when `should_drop(current_range, kept_range)` is True for some
+    already-kept range, otherwise keeping it. The two public collapse
+    functions below differ only in which predicate they pass in - everything
+    else (the sort, the kept_rows/kept_ranges bookkeeping, the empty-
+    dataframe fallback) is identical between them, so it lives here once.
+
+    The span tiebreak was added after property-based testing
+    (tests/test_detection_overlap_properties.py) found that two same-scored
+    candidates, one fully containing the other, could both survive or either
+    one survive depending purely on which happened to appear first in `df` -
+    score-only sorting doesn't order tied rows at all, so it fell back to
+    whatever incidental order the input arrived in, making the result
+    non-deterministic across runs/pandas versions for that (rare but real)
+    case. Processing the larger span first among ties makes the outcome
+    reproducible, and additionally means a fully-redundant smaller duplicate
+    gets dropped rather than kept alongside it - but this only resolves EXACT
+    ties: a smaller, genuinely higher-scoring row and a larger, lower-scoring
+    one that doesn't fully cover it can both legitimately survive regardless
+    of this tiebreak (each may represent a structurally different candidate
+    that just happens to share coordinates) - that's correct, not a bug.
     """
     kept_rows = []
     kept_ranges = []
 
-    for _, row in df.sort_values(score_col, ascending=False).iterrows():
+    ordering = df.assign(_span=df[end_col] - df[start_col]).sort_values(
+        [score_col, '_span'], ascending=[False, False], kind='mergesort')
+
+    for _, row in ordering.iterrows():
         current_range = (row[start_col], row[end_col])
         if any(should_drop(current_range, kept_range) for kept_range in kept_ranges):
             continue
-        kept_rows.append(row)
+        kept_rows.append(row.drop('_span'))
         kept_ranges.append(current_range)
 
     return pd.DataFrame(kept_rows, columns=df.columns) if kept_rows else df.iloc[0:0]
