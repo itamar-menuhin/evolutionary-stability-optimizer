@@ -193,7 +193,21 @@ def optimization_engine(
 
     problem = None
     flag = 0
-    while flag < 60:  # retry, dropping unsatisfiable/crashing constraints, up to 60 times
+    # 60 was chosen empirically back when constraint counts were always small
+    # (num_sites capped how many hotspot-avoidance constraints existed at
+    # all). Since num_sites became report-only and constraint-building
+    # started using every raw, uncollapsed candidate (see
+    # docs/detector-comparisons.md's overlap-collapse coverage-gap entry), a
+    # single dense/repetitive sequence can legitimately produce well over 60
+    # individual AvoidPattern constraints - a fixed 60-round budget could then
+    # raise NoSolutionError purely from running out of retries, not from any
+    # actual unresolvable conflict. Scale the budget with how many
+    # constraints there actually are (computed once, before any get dropped,
+    # so it doesn't shrink alongside `cnst` as rounds progress), keeping 60 as
+    # the floor for the common, small-constraint-count case this was
+    # originally tuned for.
+    retry_budget = max(60, len(cnst))
+    while flag < retry_budget:  # retry, dropping unsatisfiable/crashing constraints
         problem = dnachisel.DnaOptimizationProblem(sequence=str(seq), constraints=cnst, objectives=obj)
         try:
             problem.resolve_constraints()
@@ -241,7 +255,8 @@ def optimization_engine(
                 cnst.remove(constraint)
             flag += 1
     else:
-        raise NoSolutionError(f"More than 60 hard constraints were not satisfied ({flag}).", problem=problem)
+        raise NoSolutionError(
+            f"More than {retry_budget} hard constraints were not satisfied ({flag}).", problem=problem)
 
     problem.optimize()
     obj_description = problem.objectives_text_summary()

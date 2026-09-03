@@ -218,6 +218,19 @@ def exclusion_gc_tester(file, indexes):
     return legal_mini_gc, legal_maxi_gc
 
 
+def _sequence_lengths_by_index_key(files):
+    """Map (file_stem, seq_index_str) -> sequence length, for every record in
+    `files` - lets ORF/exclusion regions be checked against the actual
+    sequence they'll apply to, not just against each other.
+    """
+    lengths = {}
+    for file in files:
+        filename_indexes = file_stem(file[0])
+        for ii, record in enumerate(file_opener(file)):
+            lengths[(filename_indexes, str(ii))] = len(record.seq)
+    return lengths
+
+
 def test_input(mini_gc, maxi_gc, indexes, files):
     """Validate GC-content bounds and ORF/exclusion region formatting before running.
 
@@ -232,7 +245,15 @@ def test_input(mini_gc, maxi_gc, indexes, files):
         return 'The minimal GC content must be less than the maximum!'
 
     if len(indexes) > 0:
-        for index_value in indexes.values():
+        # only checked against a record when the (file, seq_index) key
+        # actually matches one - an unmatched key is a separate, pre-existing
+        # leniency (eso.io_utils.file_stem's docstring, eso.pipeline.backend's
+        # `if key not in indexes` check) this doesn't attempt to change.
+        seq_lengths = _sequence_lengths_by_index_key(files)
+
+        for key, index_value in indexes.items():
+            seq_length = seq_lengths.get(key)
+
             orf_indexes = parse_region(index_value[0])
             if orf_indexes == 'error':
                 return 'ORF regions must be formatted as "start_1-end_1,start_2-end_2,...", for example "1-9, 21-29"'
@@ -243,6 +264,17 @@ def test_input(mini_gc, maxi_gc, indexes, files):
                     return 'Start index must be smaller than end index!'
                 if (curr_ind[1] - curr_ind[0]) % 3 != 0:
                     return 'Indexes must describe sequence length divisible by 3!'
+                # without this, an ORF region's end past the actual sequence
+                # length isn't rejected here - Python's forgiving slicing
+                # (seq[0:6000] on a 500nt string just returns 500nt) means a
+                # region meant for a different/longer sequence would silently
+                # get truncated instead of erroring, with no indication the
+                # requested region wasn't what was actually applied.
+                if seq_length is not None and curr_ind[1] > seq_length:
+                    return (
+                        f'ORF region {curr_ind[0] + 1}-{curr_ind[1]} (1-indexed) goes past the end of '
+                        f'{key[0]!r} sequence {key[1]} ({seq_length}nt long)!'
+                    )
 
             if index_value[1] not in ('', 'None'):
                 region_indexes = parse_region(index_value[1])
@@ -258,6 +290,11 @@ def test_input(mini_gc, maxi_gc, indexes, files):
                         return 'Start index must be greater than 0, also for exclusion sites!!'
                     if curr_ind[0] >= curr_ind[1]:
                         return 'Start index must be smaller than end index, also for exclusion sites!'
+                    if seq_length is not None and curr_ind[1] > seq_length:
+                        return (
+                            f'Exclusion region {curr_ind[0] + 1}-{curr_ind[1]} (1-indexed) goes past the end '
+                            f'of {key[0]!r} sequence {key[1]} ({seq_length}nt long)!'
+                        )
 
         legal_mini_gc, legal_maxi_gc = 0.0, 1.0
         for file in files:

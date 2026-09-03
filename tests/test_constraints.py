@@ -117,6 +117,19 @@ def test_error_sentinel_passes_through_unchanged():
     assert result is site
 
 
+def test_empty_input_dataframe_does_not_crash():
+    # Regression test for a real, previously-latent bug: an empty `df`
+    # crashed with "ValueError: Got 1 positions but value has 3 columns" -
+    # `df_before.apply(..., axis=1)` on zero rows can't infer a Series result
+    # and returns an empty DataFrame instead, which then fails the
+    # `.loc[:, 'sequence'] = ...` assignment's shape check. Confirmed
+    # reachable end-to-end once recombination_to_multiple_avoidance_sites
+    # can legitimately return empty (both sites of every pair excluded).
+    site = pd.DataFrame(columns=["start", "end", "sequence"])
+    result = exclusion_site_correcter(site, [(0, 20)])
+    assert result.empty
+
+
 # --- recombination_to_multiple_avoidance_sites ---------------------------
 
 def test_substitution_pair_targets_region_2_with_all_single_substitution_neighbors():
@@ -162,6 +175,22 @@ def test_indel_pair_targets_the_smaller_region_when_not_excluded():
     assert (result.iloc[0].start, result.iloc[0].end) == (0, 6)
 
 
+def test_substitution_pair_yields_no_constraint_when_both_regions_excluded():
+    # Regression test for a real bug: when both sites of a recombination pair
+    # sit inside an exclusion region, the old code still fell through to
+    # constraining region_2 - a region the user explicitly locked - directly
+    # contradicting the AvoidChanges constraint built for it elsewhere.
+    df = pd.DataFrame([{
+        "start_1": 0, "end_1": 6, "sequence_1": "ACGTAC",
+        "start_2": 20, "end_2": 26, "sequence_2": "ACGTAG",
+    }])
+
+    with pytest.warns(UserWarning, match="no site left to mutate"):
+        result = recombination_to_multiple_avoidance_sites(df, [(0, 6), (20, 26)])
+
+    assert result.empty
+
+
 def test_indel_pair_targets_the_larger_regions_insertion_when_smaller_is_excluded():
     df = pd.DataFrame([{
         "start_1": 0, "end_1": 6, "sequence_1": "ACGTAC",
@@ -175,6 +204,21 @@ def test_indel_pair_targets_the_larger_regions_insertion_when_smaller_is_exclude
     assert set(result.start) == {20}
     assert set(result.end) == {27}
     assert len(result) == 4
+
+
+def test_indel_pair_yields_no_constraint_when_both_regions_excluded():
+    # Regression test for the same bug as the substitution-pair version
+    # above, in _indel_recombinations: falling through to constrain the
+    # smaller region even though it also overlaps a lock.
+    df = pd.DataFrame([{
+        "start_1": 0, "end_1": 6, "sequence_1": "ACGTAC",
+        "start_2": 20, "end_2": 27, "sequence_2": "ACGTACG",
+    }])
+
+    with pytest.warns(UserWarning, match="no site left to mutate"):
+        result = recombination_to_multiple_avoidance_sites(df, [(0, 6), (20, 27)])
+
+    assert result.empty
 
 
 # --- convert_df_to_constraints -------------------------------------------

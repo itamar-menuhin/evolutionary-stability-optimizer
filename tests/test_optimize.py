@@ -197,6 +197,41 @@ def test_non_codon_aligned_homopolymer_falls_back_to_dropping_the_site():
     assert any("translation preservation" in m for m in messages)
 
 
+def test_retry_budget_scales_past_the_old_fixed_60_round_cap():
+    # Smoke test, not a proven regression reproduction: I could not construct
+    # a case that actually failed under the old fixed `flag < 60` (checked
+    # directly - DNAChisel's own "drop every currently-failing constraint in
+    # one round" path, eso.optimize's `drop_and_retry` branch, handles this
+    # exact homopolymer scenario efficiently regardless of how many point
+    # constraints exist, so this scenario alone doesn't need more than a
+    # handful of rounds either way). The scaling fix (`retry_budget =
+    # max(60, len(cnst))`) is still a real, deliberate defensive improvement
+    # for the OTHER retry path this loop has - DNAChisel surfacing one
+    # specific named unsatisfiable constraint per top-level
+    # resolve_constraints() call (the `e.constraint is not None` branch),
+    # which drops exactly one constraint per round - since that path scales
+    # with constraint count, not with rounds-per-batch, if it's ever the one
+    # DNAChisel takes for a dense-enough sequence. I did not find a
+    # deterministic way to force DNAChisel down that specific path with more
+    # than 60 named failures from the outside. This test just confirms a
+    # large (~100 point constraints), all-unsatisfiable case still resolves
+    # correctly with the new budget in place - a coverage-at-scale check, not
+    # proof the old cap was reachable.
+    num_t = 200  # ~100 point constraints via modify_df_slippage's "every other unit"
+    seq = "ATG" + "T" * num_t + "TAA"
+    df_slippage = pd.DataFrame([{
+        "start": 3, "end": 3 + num_t, "length_base_unit": 1, "sequence": "T" * num_t,
+        "num_base_units": num_t, "log10_prob_slippage_ecoli": -1.0,
+    }])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        final_seq, _, _ = optimization_engine(seq, df_slippage=df_slippage, organism_name="kompas")
+
+    assert len(final_seq) == len(seq)
+    assert final_seq[:3] == "ATG" and final_seq[-3:] in ("TAA", "TAG", "TGA")
+
+
 def test_custom_score_is_scoped_to_orf_regions_not_the_whole_sequence():
     # regression test for a real bug: custom scoring applied across the WHOLE
     # sequence regardless of orf_regions, unlike the built-in CAI/tAI codon

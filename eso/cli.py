@@ -24,7 +24,10 @@ def build_parser():
                              "dam, dcm; cryptic ribosome binding: shine_dalgarno; cryptic sigma70 promoter "
                              "elements: sigma70_minus35, sigma70_minus10), e.g. --common-motifs dam,dcm. "
                              "At least one of --motifs-path/--common-motifs is required with --compute-motifs.")
-    parser.add_argument('--num-sites', type=float, default=np.inf, help="Max hotspots to report/constrain per category (default: all).")
+    parser.add_argument('--num-sites', type=float, default=np.inf,
+                        help="Max hotspots to report per category (default: all). Only limits what's "
+                             "written to the CSVs - every detected hotspot always gets a correction "
+                             "constraint during optimization, regardless of this value.")
     parser.add_argument('--no-optimize', action='store_true', help="Only detect hotspots, skip sequence optimization.")
     parser.add_argument('--mini-gc', type=float, default=0.3)
     parser.add_argument('--maxi-gc', type=float, default=0.7)

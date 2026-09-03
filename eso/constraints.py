@@ -2,12 +2,23 @@
 respecting user-specified exclusion (locked) regions.
 """
 
+import warnings
 from os import path
 
 import dnachisel
 import pandas as pd
 
 from eso.detection.recombination import _generate_neighbors
+
+
+def _warn_unfixable_recombination_pair(start_1, end_1, start_2, end_2):
+    warnings.warn(
+        f"Recombination pair ({start_1}, {end_1}) / ({start_2}, {end_2}) has both sites inside an "
+        "exclusion (locked) region - there is no site left to mutate that would break this pair "
+        "without touching a locked region, so no correction constraint was built for it. This "
+        "recombination hotspot will survive optimization unmodified.",
+        stacklevel=3,
+    )
 
 
 def has_overlap_exclusion(start, end, exclusions):
@@ -33,7 +44,15 @@ def _indel_recombinations(row, exclusions):
     """For an indel-type recombination pair: enforce a change in the smaller
     region if it doesn't overlap an exclusion; otherwise enforce a change in
     the larger region's inserted nucleotide (the only edit that doesn't
-    increase the Levenshtein distance further).
+    increase the Levenshtein distance further). If BOTH regions overlap an
+    exclusion, there is no site left that can legally be mutated - returns no
+    constraint at all (and warns), rather than the previous behavior of
+    falling through to constrain the smaller region anyway even though it
+    overlaps a locked region, directly contradicting the hard AvoidChanges
+    constraint built for that same region elsewhere (confirmed directly:
+    this could make DNAChisel's constraint-resolution retry loop drop
+    whichever of the two conflicting constraints it happened to reach first
+    - in the worst case, the user's own AvoidChanges lock).
     """
     start_small, end_small, sequence_small = row.start_1, row.end_1, row.sequence_1
     start_large, end_large, sequence_large = row.start_2, row.end_2, row.sequence_2
@@ -45,7 +64,8 @@ def _indel_recombinations(row, exclusions):
         return [(start_small, end_small, sequence_small)]
 
     if has_overlap_exclusion(start_large, end_large, exclusions):
-        return [(start_small, end_small, sequence_small)]
+        _warn_unfixable_recombination_pair(start_small, end_small, start_large, end_large)
+        return []
 
     prefix = path.commonprefix([sequence_small, sequence_large])
     suffix = sequence_small[len(prefix):] if len(prefix) < len(sequence_small) else ''
@@ -55,11 +75,24 @@ def _indel_recombinations(row, exclusions):
 def _substitution_recombinations(row, exclusions):
     """For a substitution-type recombination pair: enforce a change in
     whichever region doesn't overlap an exclusion, at all its single-substitution neighbors.
+    If BOTH regions overlap an exclusion, there is no site left that can
+    legally be mutated - returns no constraint at all (and warns), rather
+    than the previous behavior of falling through to constrain region_2
+    anyway even though it overlaps a locked region (see
+    _indel_recombinations' docstring for the same bug in its sibling
+    function, and why this matters).
     """
     start_1, end_1, sequence_1 = row.start_1, row.end_1, row.sequence_1
     start_2, end_2 = row.start_2, row.end_2
 
-    if has_overlap_exclusion(start_2, end_2, exclusions) and not has_overlap_exclusion(start_1, end_1, exclusions):
+    region_1_excluded = has_overlap_exclusion(start_1, end_1, exclusions)
+    region_2_excluded = has_overlap_exclusion(start_2, end_2, exclusions)
+
+    if region_1_excluded and region_2_excluded:
+        _warn_unfixable_recombination_pair(start_1, end_1, start_2, end_2)
+        return []
+
+    if region_2_excluded:
         start_2, end_2 = start_1, end_1
 
     substitution_neighbours, _, _ = _generate_neighbors(sequence_1)
@@ -101,6 +134,18 @@ def exclusion_site_correcter(df, exclusion_regions):
     boundary.
     """
     if exclusion_regions == 'error':
+        return df
+
+    if df.empty:
+        # nothing to correct - and, separately, `df_before.apply(..., axis=1)`
+        # below can't infer a Series result from zero rows and returns an
+        # empty DataFrame instead, which then fails the `.loc[:, 'sequence'] =
+        # ...` assignment with a shape-mismatch ValueError. Confirmed directly:
+        # reachable via recombination_to_multiple_avoidance_sites now
+        # correctly returning empty when every candidate pair's sites are
+        # excluded (see eso.constraints._indel_recombinations/
+        # _substitution_recombinations) - previously latent because that path
+        # never used to return empty.
         return df
 
     for region in exclusion_regions:

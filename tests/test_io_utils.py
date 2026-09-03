@@ -86,6 +86,44 @@ def test_valid_orf_and_exclusion_region_together_succeeds(tmp_path):
     assert result == 'Success!'
 
 
+# --- test_input: region end past the actual sequence length (regression) --
+
+def test_orf_region_past_sequence_end_is_rejected(tmp_path):
+    # Regression test for a real bug: an ORF/exclusion region string is only
+    # checked for internal consistency (start<end, %3==0), never against the
+    # actual sequence it's meant to apply to - so a region written for a
+    # different/longer sequence than the one it got matched to (e.g. a typo
+    # in --indexes-file, or a mismatched file/seq_index key) used to pass
+    # validation, then silently get truncated by Python's forgiving slicing
+    # instead of erroring anywhere.
+    file_path = tmp_path / 'f.fasta'
+    file_path.write_text('>x\n' + 'ACGT' * 15 + '\n')  # 60nt
+
+    result = validate_input(0.3, 0.7, {('f', '0'): ('1-9000', '')}, [(str(file_path), 'fasta')])
+    assert 'goes past the end' in result
+    assert "'f'" in result and '60nt' in result
+
+
+def test_exclusion_region_past_sequence_end_is_rejected(tmp_path):
+    file_path = tmp_path / 'f.fasta'
+    file_path.write_text('>x\n' + 'ACGT' * 15 + '\n')  # 60nt
+
+    result = validate_input(0.3, 0.7, {('f', '0'): ('1-9', '1-9000')}, [(str(file_path), 'fasta')])
+    assert 'goes past the end' in result
+
+
+def test_orf_region_past_sequence_end_is_not_flagged_for_an_unmatched_index_key(tmp_path):
+    # an index entry whose (file, seq_index) doesn't match any actual record
+    # is a separate, pre-existing leniency (see eso.io_utils.file_stem's
+    # docstring) - this test just confirms the new length check doesn't
+    # crash or misfire when there's no matching sequence to check against.
+    file_path = tmp_path / 'f.fasta'
+    file_path.write_text('>x\n' + 'ACGT' * 15 + '\n')  # 60nt
+
+    result = validate_input(0.3, 0.7, {('unrelated_file', '0'): ('1-9000', '')}, [(str(file_path), 'fasta')])
+    assert result == 'Success!'
+
+
 # --- relevant_file_paths ---------------------------------------------------
 
 def test_finds_files_directly_in_and_one_level_under_input_folder(tmp_path):
