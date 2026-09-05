@@ -1,6 +1,7 @@
 # ESO - Evolutionary Stability Optimizer
 
 [![Tests](https://github.com/itamar-menuhin/evolutionary-stability-optimizer/actions/workflows/tests.yml/badge.svg)](https://github.com/itamar-menuhin/evolutionary-stability-optimizer/actions/workflows/tests.yml)
+[![PyPI](https://img.shields.io/pypi/v/evolutionary-stability-optimizer.svg)](https://pypi.org/project/evolutionary-stability-optimizer/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 
@@ -30,15 +31,20 @@ If that prints something below `Python 3.11`, or fails with "command not found"/
 recognized", install a current version from [python.org/downloads](https://www.python.org/downloads/)
 first (the installer's default settings are fine) before continuing.
 
-**2. Install ESO.** In a terminal, `cd` into this folder (the one this README is in), then:
+**2. Install ESO.** In a terminal:
 
 ```bash
-pip install .
+pip install evolutionary-stability-optimizer
 ```
 
 This can take a minute or two the first time. If it ends with a line that doesn't contain
 the word `error`, it worked - skip to step 3. If you do see an error, check
 [Troubleshooting](#troubleshooting) below before asking for help.
+
+(The PyPI package is named `evolutionary-stability-optimizer`, but the code you import is
+still `eso` - e.g. `from eso import main`. If you'd rather install from a local clone of
+this repository instead - to contribute, or to run the files under `examples/` - see
+[Install from source](#install-from-source) below.)
 
 **3. Try it on a real sequence.** Put a FASTA file (a plain text file starting with a `>`
 line, then the DNA sequence) in a folder by itself, e.g. `my_sequences/gene.fasta`
@@ -81,15 +87,15 @@ a ChatGPT assistant configured specifically for onboarding onto this tool (see
   (Every `eso-optimize ...` example in this README works identically as
   `python -m eso.cli ...`.)
 - **An error mentioning `Microsoft Visual Studio`, `CMake`, or "failed building wheel"
-  during `pip install .`**: this means `pip` tried to compile a dependency from source
-  instead of using a prebuilt version - almost always fixed by upgrading pip first
+  during install**: this means `pip` tried to compile a dependency from source instead of
+  using a prebuilt version - almost always fixed by upgrading pip first
   (`python -m pip install --upgrade pip`) and trying the install again, since an older
   `pip` can miss prebuilt wheels that a newer one finds.
 - **`ModuleNotFoundError` or `ImportError` right after install**: double check you're
-  running `python`/`eso-optimize` from the *same* Python installation you ran
-  `pip install .` with. If you're not sure, run
-  `python -m pip show eso` - if that fails, you installed into a different Python than the
-  one you're now running.
+  running `python`/`eso-optimize` from the *same* Python installation you installed with.
+  If you're not sure, run `python -m pip show evolutionary-stability-optimizer` (not
+  `pip show eso` - that's the *importable* module name, not the installed package's name)
+  - if that fails, you installed into a different Python than the one you're now running.
 - **"No such file or directory" for your input folder**: `--input-folder` is relative to
   wherever your terminal's current directory is - either `cd` there first, or use a full
   path (e.g. `C:\Users\you\my_sequences` or `/Users/you/my_sequences`).
@@ -148,9 +154,15 @@ detector. That's a different problem from ESO's (evaluating one already-chosen s
 so it was judged out of scope for this library rather than reconciled with the other
 detectors' thresholds.
 
-## Install
+## Install from source
+
+Most users should just `pip install evolutionary-stability-optimizer` (see
+[Quickstart](#quickstart) above) - install from source instead if you're contributing (see
+[`CONTRIBUTING.md`](CONTRIBUTING.md)) or want to run the files under `examples/` directly.
 
 ```bash
+git clone https://github.com/itamar-menuhin/evolutionary-stability-optimizer.git
+cd evolutionary-stability-optimizer
 poetry install
 # or: pip install -e .
 ```
@@ -159,6 +171,7 @@ Word-document diff reports (`eso.report`) need the optional `docx-report` extra:
 
 ```bash
 poetry install -E docx-report
+# or, from PyPI instead of source: pip install "evolutionary-stability-optimizer[docx-report]"
 ```
 
 ## Usage
