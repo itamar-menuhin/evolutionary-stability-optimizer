@@ -75,6 +75,89 @@ def suspect_site_extractor(target_seq, compute_motifs, num_sites, motifs_path=No
     return sites_collector
 
 
+def reoptimize_until_stable(
+        curr_seq, compute_motifs, num_sites, motifs_path, common_motifs,
+        recombination_mode, slippage_mode, mini_gc, maxi_gc, method, organism_name,
+        custom_score_fn, custom_score_minimize, orf_regions=(), exclusion_regions=(),
+        max_rounds=5, on_round_start=None):
+    """Repeatedly detects hotspots in `curr_seq` and re-optimizes to avoid
+    them, continuing for as long as each fresh detection pass still finds
+    something.
+
+    A single fixed optimize -> detect -> re-optimize recipe (as this used to
+    be, run exactly once) has a real gap: the final re-optimization's own
+    synonymous-codon substitutions - chosen to satisfy GC/CAI/avoidance
+    objectives - are never re-screened, so a chosen codon can introduce a
+    brand-new tandem repeat or near-duplicate that the tool would report as
+    clean. This closes that gap by looping detect+re-optimize until a
+    detection pass finds nothing at all (the common case: one extra round
+    confirms nothing new was introduced) or `max_rounds` is reached (a
+    backstop against a pathological sequence where fixing one hotspot always
+    creates another, so this can't loop forever).
+
+    `on_round_start(round_index, sites)`, if given, is called right after
+    each detection pass, before that round's re-optimization - lets a caller
+    report live progress (e.g. eso_desktop's status screen) without this
+    function knowing anything about how progress is displayed.
+
+    Returns (final_sequence, obj_description, total_num_edits,
+    cumulative_sites, rounds_used):
+      - obj_description is the last round's DNAChisel objectives summary, or
+        None if no round ever found anything (curr_seq is unchanged from
+        what was passed in - callers computing a CAI-after value should fall
+        back to their own CAI-before description in that case, since nothing
+        was edited).
+      - cumulative_sites is shaped like suspect_site_extractor's return
+        value, but concatenated across every round that found anything - the
+        full history of what was found and corrected, not just the last
+        round (which, at convergence, finds nothing by definition).
+    """
+    empty = {'df_recombination': pd.DataFrame(), 'df_slippage': pd.DataFrame(),
+              'df_recombination_raw': pd.DataFrame(), 'df_slippage_raw': pd.DataFrame()}
+    if compute_motifs:
+        empty['df_motifs'] = pd.DataFrame()
+    cumulative = {key: [] for key in empty}
+
+    obj_description = None
+    total_num_edits = 0
+    rounds_used = 0
+
+    for round_index in range(1, max_rounds + 1):
+        sites = suspect_site_extractor(
+            curr_seq, compute_motifs, num_sites, motifs_path, common_motifs=common_motifs,
+            recombination_mode=recombination_mode, slippage_mode=slippage_mode)
+        rounds_used = round_index
+
+        if on_round_start is not None:
+            on_round_start(round_index, sites)
+
+        df_motifs = sites.get('df_motifs', pd.DataFrame())
+        found_anything = (
+            len(sites['df_recombination_raw']) > 0 or len(sites['df_slippage_raw']) > 0
+            or len(df_motifs) > 0
+        )
+        if not found_anything:
+            break
+
+        for key in cumulative:
+            df = sites.get(key, pd.DataFrame())
+            if len(df) > 0:
+                cumulative[key].append(df)
+
+        curr_seq, obj_description, num_edits = optimization_engine(
+            curr_seq, df_recombination=sites['df_recombination_raw'], df_slippage=sites['df_slippage_raw'],
+            df_motifs=df_motifs, mini_gc=mini_gc, maxi_gc=maxi_gc, method=method, organism_name=organism_name,
+            custom_score_fn=custom_score_fn, custom_score_minimize=custom_score_minimize,
+            orf_regions=orf_regions, exclusion_regions=exclusion_regions)
+        total_num_edits += num_edits
+
+    cumulative_sites = {
+        key: (pd.concat(dfs, ignore_index=True) if dfs else empty[key].copy())
+        for key, dfs in cumulative.items()
+    }
+    return curr_seq, obj_description, total_num_edits, cumulative_sites, rounds_used
+
+
 def _extract_cai(objectives_text_summary, num_codons):
     """Parse the CAI objective's score out of DNAChisel's summary text, or
     return None if there wasn't one (e.g. `organism_name` wasn't recognized,
@@ -135,47 +218,58 @@ def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
             if custom_score_fn is None:
                 maximal_cai = _extract_cai(obj_description, num_codons)
 
-        curr_sites_collector = suspect_site_extractor(
-            curr_seq, compute_motifs, num_sites, motifs_path, common_motifs=common_motifs,
-            recombination_mode=recombination_mode, slippage_mode=slippage_mode)
+        if optimize:
+            # Loops detect+re-optimize until a fresh detection pass finds
+            # nothing at all (or a round cap is hit) - a single fixed pass
+            # can't tell whether its own edits introduced a new hotspot; see
+            # reoptimize_until_stable's docstring.
+            curr_seq, obj_description_reopt, num_edits, cumulative_sites, _ = reoptimize_until_stable(
+                curr_seq, compute_motifs, num_sites, motifs_path, common_motifs,
+                recombination_mode, slippage_mode, mini_gc, maxi_gc, method, organism_name,
+                custom_score_fn, custom_score_minimize, orf_regions, exclusion_regions)
+        else:
+            cumulative_sites = suspect_site_extractor(
+                curr_seq, compute_motifs, num_sites, motifs_path, common_motifs=common_motifs,
+                recombination_mode=recombination_mode, slippage_mode=slippage_mode)
+            obj_description_reopt, num_edits = None, 0
 
         # reporting (CSV) uses the collapsed, num_sites-limited view; the
         # optimizer is given the raw, uncollapsed, unlimited view instead, so a
         # genuinely distinct hotspot that only partially overlaps a
         # higher-scoring one still gets its own correction constraint - see
         # suspect_site_extractor's docstring and docs/detector-comparisons.md.
-        df_recombination = curr_sites_collector['df_recombination']
+        # Both views are now the UNION across every re-optimization round, not
+        # just the first - see reoptimize_until_stable's docstring.
+        df_recombination = cumulative_sites['df_recombination']
         if len(df_recombination) > 0:
             df_recombination.loc[:, 'sequence_number'] = str(ii)
             recombination_collector.append(df_recombination)
-        df_recombination_raw = curr_sites_collector['df_recombination_raw']
+        df_recombination_raw = cumulative_sites['df_recombination_raw']
         if len(df_recombination_raw) > 0:
             df_recombination_raw.loc[:, 'sequence_number'] = str(ii)
             recombination_raw_collector.append(df_recombination_raw)
 
-        df_slippage = curr_sites_collector['df_slippage']
+        df_slippage = cumulative_sites['df_slippage']
         if len(df_slippage) > 0:
             df_slippage.loc[:, 'sequence_number'] = str(ii)
             slippage_collector.append(df_slippage)
-        df_slippage_raw = curr_sites_collector['df_slippage_raw']
+        df_slippage_raw = cumulative_sites['df_slippage_raw']
         if len(df_slippage_raw) > 0:
             df_slippage_raw.loc[:, 'sequence_number'] = str(ii)
             slippage_raw_collector.append(df_slippage_raw)
 
-        df_motifs = pd.DataFrame()
         if compute_motifs:
-            df_motifs = curr_sites_collector['df_motifs']
+            df_motifs = cumulative_sites['df_motifs']
             if len(df_motifs) > 0:
                 df_motifs.loc[:, 'sequence_number'] = str(ii)
                 motifs_collector.append(df_motifs)
 
         if optimize:
-            curr_seq, obj_description, num_edits = optimization_engine(
-                curr_seq, df_recombination=df_recombination_raw, df_slippage=df_slippage_raw, df_motifs=df_motifs,
-                mini_gc=mini_gc, maxi_gc=maxi_gc, method=method, organism_name=organism_name,
-                custom_score_fn=custom_score_fn,
-                custom_score_minimize=custom_score_minimize,
-                orf_regions=orf_regions, exclusion_regions=exclusion_regions)
+            # nothing was found/edited across every round -> curr_seq is
+            # exactly pass 1's output, and its CAI is exactly maximal_cai;
+            # reuse that instead of inventing an "after" description for a
+            # sequence that was never touched a second time.
+            obj_description = obj_description_reopt if obj_description_reopt is not None else obj_description
 
             with open(path.join(curr_output_path, 'final_sequence.txt'), "w", encoding="utf-8") as text_file:
                 if custom_score_fn is None and maximal_cai is not None:
