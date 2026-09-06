@@ -210,3 +210,44 @@ def test_no_corrected_csvs_written_when_optimize_is_off(tmp_path):
     out_files = {p.name for p in (output_dir / "test_gene").iterdir()}
     assert "recombination_sites_corrected.csv" not in out_files
     assert "slippage_sites_corrected.csv" not in out_files
+
+
+def test_report_csvs_are_always_written_even_for_a_clean_sequence(tmp_path):
+    # Regression test for a real workflow-integration gap: a CSV was only
+    # written "if <collector list is non-empty>" - on a clean sequence with
+    # no hotspots at all, the file simply didn't exist rather than being
+    # written empty-with-headers. A pipeline rule (Snakemake/Nextflow/CI)
+    # declaring recombination_sites.csv as an expected output would fail on
+    # exactly the input that should be the easy case.
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    output_dir = tmp_path / "output"
+
+    seq = "ATG" + "GCATCGATCGTAGCTAGCTA" + "TAA"  # confirmed hotspot-free
+    (input_dir / "clean_gene.fasta").write_text(f">clean_gene\n{seq}\n")
+
+    message, _ = main(
+        input_folder=str(input_dir),
+        output_path=str(output_dir),
+        compute_motifs=True,
+        common_motifs=['dam'],
+        num_sites=50,
+        optimize=True,
+    )
+
+    assert message == 'Success!'
+    out_dir = output_dir / "clean_gene"
+    out_files = {p.name for p in out_dir.iterdir()}
+    assert "recombination_sites.csv" in out_files
+    assert "slippage_sites.csv" in out_files
+    assert "recombination_sites_corrected.csv" in out_files
+    assert "slippage_sites_corrected.csv" in out_files
+    assert "motif_sites.csv" in out_files
+
+    # written with a real header row, not just an empty file.
+    df = pd.read_csv(out_dir / "recombination_sites.csv")
+    assert list(df.columns) == [
+        'sequence_1', 'start_1', 'end_1', 'sequence_2', 'start_2', 'end_2',
+        'location_delta', 'site_length', 'log10_prob_recombination_ecoli', 'sequence_number',
+    ]
+    assert len(df) == 0

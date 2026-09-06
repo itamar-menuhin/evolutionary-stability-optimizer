@@ -113,11 +113,10 @@ def reoptimize_until_stable(
         full history of what was found and corrected, not just the last
         round (which, at convergence, finds nothing by definition).
     """
-    empty = {'df_recombination': pd.DataFrame(), 'df_slippage': pd.DataFrame(),
-              'df_recombination_raw': pd.DataFrame(), 'df_slippage_raw': pd.DataFrame()}
+    cumulative_keys = ['df_recombination', 'df_slippage', 'df_recombination_raw', 'df_slippage_raw']
     if compute_motifs:
-        empty['df_motifs'] = pd.DataFrame()
-    cumulative = {key: [] for key in empty}
+        cumulative_keys.append('df_motifs')
+    cumulative = {key: [] for key in cumulative_keys}
 
     obj_description = None
     total_num_edits = 0
@@ -154,8 +153,15 @@ def reoptimize_until_stable(
             hairpin_window=hairpin_window, avoid_enzymes=avoid_enzymes)
         total_num_edits += num_edits
 
+    # Fall back to the last round's own (properly-columned, even when empty)
+    # dataframe for any category nothing was ever found in - NOT a bare
+    # `pd.DataFrame()`, which has no columns at all and would silently
+    # produce a schema-less/headerless CSV downstream. suspect_site_extractor
+    # always returns real column definitions, empty or not, so `sites` (from
+    # the loop's last iteration, always run at least once) is a safe source
+    # of those columns regardless of whether that round found anything.
     cumulative_sites = {
-        key: (pd.concat(dfs, ignore_index=True) if dfs else empty[key].copy())
+        key: (pd.concat(dfs, ignore_index=True) if dfs else sites.get(key, pd.DataFrame()))
         for key, dfs in cumulative.items()
     }
     return curr_seq, obj_description, total_num_edits, cumulative_sites, rounds_used
@@ -248,29 +254,33 @@ def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
         # suspect_site_extractor's docstring and docs/detector-comparisons.md.
         # Both views are now the UNION across every re-optimization round, not
         # just the first - see reoptimize_until_stable's docstring.
+        # Appended even when empty (0 rows) - the detection functions always
+        # return a properly-columned dataframe either way, so concatenating
+        # an empty one is harmless, and it's what lets the CSVs below always
+        # get written with a header row rather than not existing at all on a
+        # clean sequence (see the "always write" comment below).
+        # Plain column assignment (not `.loc[:, col] = ...`, which pandas
+        # rejects on a zero-row frame with "cannot set a frame with no
+        # defined index and a scalar") - confirmed directly this is needed
+        # now that an empty (0-row) dataframe is appended too, not skipped.
         df_recombination = cumulative_sites['df_recombination']
-        if len(df_recombination) > 0:
-            df_recombination.loc[:, 'sequence_number'] = str(ii)
-            recombination_collector.append(df_recombination)
+        df_recombination['sequence_number'] = str(ii)
+        recombination_collector.append(df_recombination)
         df_recombination_raw = cumulative_sites['df_recombination_raw']
-        if len(df_recombination_raw) > 0:
-            df_recombination_raw.loc[:, 'sequence_number'] = str(ii)
-            recombination_raw_collector.append(df_recombination_raw)
+        df_recombination_raw['sequence_number'] = str(ii)
+        recombination_raw_collector.append(df_recombination_raw)
 
         df_slippage = cumulative_sites['df_slippage']
-        if len(df_slippage) > 0:
-            df_slippage.loc[:, 'sequence_number'] = str(ii)
-            slippage_collector.append(df_slippage)
+        df_slippage['sequence_number'] = str(ii)
+        slippage_collector.append(df_slippage)
         df_slippage_raw = cumulative_sites['df_slippage_raw']
-        if len(df_slippage_raw) > 0:
-            df_slippage_raw.loc[:, 'sequence_number'] = str(ii)
-            slippage_raw_collector.append(df_slippage_raw)
+        df_slippage_raw['sequence_number'] = str(ii)
+        slippage_raw_collector.append(df_slippage_raw)
 
         if compute_motifs:
             df_motifs = cumulative_sites['df_motifs']
-            if len(df_motifs) > 0:
-                df_motifs.loc[:, 'sequence_number'] = str(ii)
-                motifs_collector.append(df_motifs)
+            df_motifs['sequence_number'] = str(ii)
+            motifs_collector.append(df_motifs)
 
         if optimize:
             # nothing was found/edited across every round -> curr_seq is
