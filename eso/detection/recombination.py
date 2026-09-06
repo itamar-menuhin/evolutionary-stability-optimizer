@@ -127,14 +127,27 @@ def _elongate_sites(row, full_seq):
     """
     sequence_1, start_1, end_1 = row.sequence_1, row.start_1, row.end_1 + 1
     sequence_2, start_2, end_2 = row.sequence_2, row.start_2, row.end_2 + 1
+    seq_len = len(full_seq)
 
-    while (levenshtein_distance(full_seq[start_1:end_1 + 1], full_seq[start_2:end_2 + 1], score_cutoff=1) < 2) \
-            and (end_1 + 1 < start_2):
+    # Explicit bounds guards, not just the pre-existing non-overlap check:
+    # without them, a site pair near either end of `full_seq` can walk
+    # `end_2`/`start_1` past the sequence's real boundaries. Python's
+    # negative-index/out-of-range slicing doesn't raise for this (it
+    # silently wraps to the wrong end of the string, or returns ''), so this
+    # wouldn't crash - it would silently commit a wrong, wrapped-around site
+    # boundary into the final reported hotspot instead. Confirmed the
+    # underlying mechanism is real (a site starting at index 0, or ending at
+    # the sequence's last index, both reach the unguarded boundary); not
+    # confirmed this specific silent-corruption outcome occurs for every
+    # possible sequence content, but the guard costs nothing and removes the
+    # risk entirely rather than relying on it happening not to trigger.
+    while (end_2 + 1 < seq_len) and (end_1 + 1 < start_2) \
+            and (levenshtein_distance(full_seq[start_1:end_1 + 1], full_seq[start_2:end_2 + 1], score_cutoff=1) < 2):
         end_1 += 1
         end_2 += 1
 
-    while (levenshtein_distance(full_seq[start_1 - 1:end_1], full_seq[start_2 - 1:end_2], score_cutoff=1) < 2) \
-            and (end_1 + 1 < start_2):
+    while (start_1 - 1 >= 0) and (end_1 + 1 < start_2) \
+            and (levenshtein_distance(full_seq[start_1 - 1:end_1], full_seq[start_2 - 1:end_2], score_cutoff=1) < 2):
         start_1 -= 1
         start_2 -= 1
 

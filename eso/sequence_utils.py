@@ -47,6 +47,14 @@ def validate_dna_alphabet(seq, sequence_label="This sequence"):
     GC content being genuinely undefined for it). See
     docs/detector-comparisons.md for the full investigation.
     """
+    if not seq:
+        # Confirmed directly: an empty sequence reaches DNAChisel's own
+        # EnforceTranslation.restrict_nucleotides with a zero-length ORF
+        # region (from optimize.py's default `orf_regions` computation) and
+        # crashes with a bare, unhandled `IndexError: string index out of
+        # range` deep inside DNAChisel - no eso-level message at all.
+        raise InvalidSequenceError(f"{sequence_label} is empty - there's nothing to optimize.")
+
     invalid = first_invalid_base(seq)
     if invalid is not None:
         position, char = invalid

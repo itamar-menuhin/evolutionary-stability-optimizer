@@ -6,6 +6,7 @@ from eso.detection.recombination import (
     calc_recombination_score,
     collapse_recombination_sites,
     recombination_sites_for_constraints,
+    _elongate_sites,
 )
 
 # non-repetitive spacer: a homopolymer/simple-repeat spacer would itself be a
@@ -126,3 +127,27 @@ def test_calc_recombination_score_matches_efm_calculator_reference():
         ours = calc_recombination_score(location_delta, site_length)
         reference = efm_reference(location_delta, site_length)
         assert ours == pytest.approx(reference, abs=1e-9)
+
+
+def test_elongate_sites_does_not_wrap_past_either_sequence_boundary():
+    # Regression test for a real gap: with no explicit bounds guard, a site
+    # pair starting at index 0 (nothing left to extend into) or ending at
+    # the sequence's last index (nothing right to extend into) could have
+    # start_1 or end_2 walked past the sequence's real boundaries. Python
+    # doesn't raise for a negative/out-of-range string index in a slice - it
+    # silently wraps to slice from the OTHER end of the string (or returns
+    # ''), which would corrupt the reported site boundary rather than crash.
+    # This site pair sits at both boundaries at once: site 1 starts at index
+    # 0, site 2 ends at the sequence's last index.
+    full_seq = "GATCGATCGATCGATC" + "AAAA" + "GATCGATCGATCGATC"
+    row = pd.Series({
+        "sequence_1": full_seq[0:16], "start_1": 0, "end_1": 15,
+        "sequence_2": full_seq[20:36], "start_2": 20, "end_2": 35,
+    })
+
+    result = _elongate_sites(row, full_seq)
+
+    assert 0 <= result.start_1 and result.end_1 <= len(full_seq)
+    assert 0 <= result.start_2 and result.end_2 <= len(full_seq)
+    assert full_seq[result.start_1:result.end_1] == result.sequence_1
+    assert full_seq[result.start_2:result.end_2] == result.sequence_2

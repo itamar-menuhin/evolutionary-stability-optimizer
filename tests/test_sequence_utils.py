@@ -58,3 +58,13 @@ def test_validate_dna_alphabet_accepts_valid_sequence():
 def test_validate_dna_alphabet_uses_the_given_label():
     with pytest.raises(InvalidSequenceError, match="^'my_gene' sequence 0 contains"):
         validate_dna_alphabet("ATGNTT", sequence_label="'my_gene' sequence 0")
+
+
+def test_validate_dna_alphabet_rejects_empty_sequence():
+    # Regression test for a real bug: an empty sequence reached DNAChisel's
+    # EnforceTranslation with a zero-length ORF region and crashed with a
+    # bare `IndexError: string index out of range` deep inside DNAChisel -
+    # confirmed directly before this fix, via
+    # eso.optimize.optimization_engine("").
+    with pytest.raises(InvalidSequenceError, match="is empty"):
+        validate_dna_alphabet("")

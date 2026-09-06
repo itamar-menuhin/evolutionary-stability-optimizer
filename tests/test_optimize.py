@@ -35,6 +35,15 @@ def test_ambiguity_code_raises_a_clear_error_instead_of_crashing_dnachisel():
         optimization_engine(seq, organism_name="not_specified")
 
 
+def test_empty_sequence_raises_a_clear_error_instead_of_crashing_dnachisel():
+    # Regression test for a real bug: an empty sequence produced a
+    # zero-length default ORF region, which crashed with a bare
+    # `IndexError: string index out of range` deep inside DNAChisel's
+    # EnforceTranslation - confirmed directly before this fix.
+    with pytest.raises(InvalidSequenceError, match="is empty"):
+        optimization_engine("", organism_name="not_specified")
+
+
 def test_translation_is_preserved():
     seq = "ATG" + "TTT" * 10 + "TAA"  # all-Phe, a real slippage/CAI target
     final_seq, _, _ = optimization_engine(seq, organism_name="kompas")
