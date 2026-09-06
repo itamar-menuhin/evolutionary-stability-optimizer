@@ -116,7 +116,7 @@ def test_unknown_mode_choice_is_rejected_by_argparse(capsys):
         assert "invalid choice" in capsys.readouterr().err
 
 
-def test_pipeline_failure_message_is_reported_and_exit_code_is_nonzero(monkeypatch):
+def test_pipeline_failure_message_is_reported_and_exit_code_is_nonzero(monkeypatch, capsys):
     def fake_run_pipeline(**kwargs):
         return "The minimal GC content must be less than the maximum!", []
     monkeypatch.setattr(cli, 'run_pipeline', fake_run_pipeline)
@@ -124,6 +124,25 @@ def test_pipeline_failure_message_is_reported_and_exit_code_is_nonzero(monkeypat
     exit_code = cli.main(['--mini-gc', '0.8', '--maxi-gc', '0.2'])
 
     assert exit_code == 1
+    # Regression test for a real gap: this used to go to stdout unconditionally,
+    # identical to a success message - a pipeline separating stdout (normal
+    # output) from stderr (failures) would see this mixed into its "everything's
+    # fine" stream. Failure text belongs on stderr, like the other two
+    # --*-file error paths already handle correctly.
+    captured = capsys.readouterr()
+    assert "minimal GC content" in captured.err
+    assert captured.out == ""
+
+
+def test_pipeline_success_message_goes_to_stdout(monkeypatch, capsys):
+    monkeypatch.setattr(cli, 'run_pipeline', lambda **kwargs: ('Success!', []))
+
+    exit_code = cli.main([])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert captured.out.strip() == "Success!"
+    assert captured.err == ""
 
 
 def test_organism_and_method_flags_reach_pipeline(monkeypatch):

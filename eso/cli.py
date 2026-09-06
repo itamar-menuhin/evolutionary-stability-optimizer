@@ -121,8 +121,16 @@ def main(argv=None):
         hairpin_window=args.hairpin_window,
         avoid_enzymes=avoid_enzymes,
     )
-    print(message)
-    return 0 if message == 'Success!' else 1
+    if message == 'Success!':
+        print(message)
+        return 0
+    # A pipeline validation failure is diagnostic/error text, not normal
+    # output - printing it to stdout regardless (as this used to) mixes
+    # failure text into a pipeline's "everything's fine" stream, the same
+    # class of bug the two --*-file error paths above were already careful
+    # to avoid.
+    print(message, file=sys.stderr)
+    return 1
 
 
 if __name__ == '__main__':
