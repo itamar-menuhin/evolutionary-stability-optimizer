@@ -7,9 +7,12 @@
 
 ESO detects hypermutable sites in engineered DNA sequences and optimizes them away with
 [DNAChisel](https://github.com/Edinburgh-Genome-Foundry/DNAChisel), while preserving the
-amino-acid translation and optimizing for host codon usage. This implementation follows
+amino-acid translation and, when a host organism is given (see `organism_name` below - it's
+skipped by default), optimizing for that host's codon usage. This implementation follows
 the approach introduced in Menuhin-Gruman et al. (2022, *ACS Synthetic Biology*) - see
-[Citation](#citation) below.
+[Citation](#citation) below for the paper itself, and
+[`docs/paper-vs-implementation.md`](docs/paper-vs-implementation.md) for exactly where
+today's default settings do and don't reproduce what it reports.
 
 Genes built from repetitive or duplicated DNA elements (a side effect of standard codon
 optimization, which tends to reuse the same "best" codon repeatedly) are prone to mutate
@@ -60,6 +63,10 @@ Then run:
 ```bash
 eso-optimize --input-folder my_sequences --output-path my_results
 ```
+
+(This first run skips host codon-usage optimization - it only detects and fixes hotspots,
+preserving whatever codons were already in your sequence. Add `--organism-name e_coli` (or
+another host - see [Usage](#usage) below) once you're ready for that part too.)
 
 **4. Check the result.** Look inside `my_results/gene/` - `final_sequence.txt` has the
 optimized sequence, `recombination_sites.csv`/`slippage_sites.csv` list what was detected
