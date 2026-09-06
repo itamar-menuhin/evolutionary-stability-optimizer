@@ -174,6 +174,23 @@ def calc_recombination_score(location_delta, site_length):
     correction - so this codebase's original 5.8 (from ESO_curr/STABLES) is
     the value actually supported by the primary source, and the previous
     change to 8.8 here was a mistake, reverted.
+
+    Scope: this is the *recA+* (RecA-mediated homologous recombination in
+    E. coli) row of Table 3 specifically - the column names throughout this
+    module (`log10_prob_recombination_ecoli`) say as much. Recombination
+    rates are mechanistically organism-specific (different HR machinery:
+    RecA in bacteria vs. Rad51-based HR or NHEJ-dominant repair in yeast/
+    mammalian cells), and this calibration's applicability outside E. coli
+    is unvalidated by its own source paper. This score is used unconditionally
+    regardless of `organism_name` (which only affects codon-usage
+    optimization, in eso.optimize) - selecting a non-E.-coli host (e.g.
+    `kompas`/Komagataella phaffii, or a human antibody chain table) does NOT
+    switch to an organism-appropriate recombination-rate model, because no
+    equivalent published model exists at this resolution. Treat detected
+    sites' absolute risk scores as most meaningful for an E. coli host;
+    for other hosts, the relative ranking (which sites are riskier than
+    others) is still informative, but the absolute probabilities are not
+    calibrated for that organism's actual recombination machinery.
     """
     a, b, c, alpha = 5.8, 1465.6, 0, 29
 

@@ -116,6 +116,13 @@ a ChatGPT assistant configured specifically for onboarding onto this tool (see
 
 ## What it detects
 
+Both risk models below are calibrated specifically for *E. coli* (RecA-mediated
+recombination, replication-slippage rates from the same source study) and are applied
+regardless of the `organism_name`/host you optimize codon usage for - no equivalent
+published model exists for other hosts at this resolution. Detected sites' *relative*
+ranking (which sites are riskier than others) still transfers reasonably to a different
+host; their *absolute* risk scores are only meaningful for an actual E. coli host.
+
 - **Replication slippage** - short tandem repeats (a base unit of length 1-15 repeated
   3+ times, or a single nucleotide repeated 4+ times) that polymerase can skip or
   duplicate during replication.

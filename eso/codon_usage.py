@@ -88,6 +88,16 @@ def cub_human_antibody_light_chain():
     return _load_bundled_csv_cub("human-antibody-light-chain-codon-frequencies.csv")
 
 
+# Selecting one of these (or any other organism_name) only changes what
+# codon-usage table optimization.py's CodonOptimize objective scores
+# against - it does NOT change which mutation-rate model hotspot detection
+# uses to score recombination/slippage risk. That model (see
+# eso.detection.recombination.calc_recombination_score's docstring) is
+# calibrated specifically for E. coli's RecA-mediated recombination
+# machinery, and no equivalent published model exists for these other hosts
+# at this resolution - detected sites' relative ranking still transfers
+# reasonably, but their absolute risk scores don't reflect this organism's
+# actual recombination/repair biology.
 CODON_USAGE_TABLES = {
     'C1': cub_c1,
     'kompas': cub_kompas,
