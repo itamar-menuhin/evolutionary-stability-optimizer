@@ -56,13 +56,26 @@ def _warn_dropped_constraint(constraint):
     )
 
 
+#: sentinel meaning "skip codon-usage optimization" - the documented
+#: default. Deliberately distinct from an actually-unrecognized organism
+#: name below: skipping via this sentinel is normal, expected behavior and
+#: shouldn't warn; an unrecognized organism name is a likely user mistake
+#: (a typo, or the wrong TaxID) that silently produces the exact same
+#: "no codon optimization happened" outcome, so it's worth surfacing.
+NOT_SPECIFIED = 'not_specified'
+
+
 def _codon_optimization_objectives(organism_name, orf_regions, method):
     """Build DNAChisel CodonOptimize objectives.
 
     `organism_name` may be one of eso.codon_usage.CODON_USAGE_TABLES' custom
-    tables (not present in the Kazusa database), or any species/TaxID
-    supported by python-codon-tables.
+    tables (not present in the Kazusa database), NOT_SPECIFIED to skip codon
+    optimization entirely, or any species/TaxID supported by
+    python-codon-tables.
     """
+    if organism_name == NOT_SPECIFIED:
+        return []
+
     if organism_name in CODON_USAGE_TABLES:
         codon_usage_table = CODON_USAGE_TABLES[organism_name]()
         return [
@@ -73,7 +86,19 @@ def _codon_optimization_objectives(organism_name, orf_regions, method):
     try:
         return [dnachisel.CodonOptimize(species=organism_name, location=orf, method=method) for orf in orf_regions]
     except Exception:
-        print('unknown organism, no codon optimization!')
+        # Genuinely unrecognized (not the NOT_SPECIFIED sentinel above) -
+        # likely a typo or wrong TaxID, silently producing the same
+        # no-codon-optimization outcome as an intentional skip. A real
+        # warning (not a print) so a caller can detect this programmatically
+        # (warnings.catch_warnings()) instead of it only ever reaching a
+        # terminal a human happens to be watching.
+        warnings.warn(
+            f"'{organism_name}' isn't a recognized organism/species name or TaxID, and isn't one of "
+            "eso.codon_usage.CODON_USAGE_TABLES' bundled tables - codon-usage optimization was skipped "
+            "entirely for this run, exactly as if organism_name had been left as its default "
+            f"({NOT_SPECIFIED!r}). Check the spelling, or try the TaxID instead of the species name.",
+            stacklevel=3,
+        )
         return []
 
 

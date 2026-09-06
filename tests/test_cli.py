@@ -15,6 +15,9 @@ because it calls eso.pipeline.main() directly with an int, bypassing the
 CLI's argparse float conversion entirely.
 """
 
+import logging
+from unittest.mock import patch
+
 import eso.cli as cli
 from eso.pipeline import main as run_pipeline_module_main
 
@@ -143,6 +146,34 @@ def test_pipeline_success_message_goes_to_stdout(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert captured.out.strip() == "Success!"
     assert captured.err == ""
+
+
+def _fake_pipeline_logging_an_info_message(**kwargs):
+    # simulates eso.report's own "Word document saved to..."/"python-docx
+    # not available..." INFO-level messages, without needing a real docx
+    # dependency state to trigger them.
+    logging.getLogger('eso.report').info("a fake info-level message")
+    return 'Success!', []
+
+
+def test_quiet_flag_suppresses_info_level_messages(capsys):
+    with patch.object(cli, 'run_pipeline', _fake_pipeline_logging_an_info_message):
+        cli.main(['--quiet'])
+
+    captured = capsys.readouterr()
+    assert "a fake info-level message" not in captured.err
+    assert "a fake info-level message" not in captured.out
+
+
+def test_without_quiet_info_level_messages_are_shown(capsys):
+    with patch.object(cli, 'run_pipeline', _fake_pipeline_logging_an_info_message):
+        cli.main([])
+
+    captured = capsys.readouterr()
+    # logging.basicConfig's default stream is stderr, not stdout - a
+    # deliberate side effect of this fix, consistent with the CLI's own
+    # separation of "actual output" (stdout) from diagnostic text (stderr).
+    assert "a fake info-level message" in captured.err
 
 
 def test_organism_and_method_flags_reach_pipeline(monkeypatch):

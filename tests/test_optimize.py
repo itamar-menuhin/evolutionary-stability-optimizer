@@ -99,11 +99,34 @@ def test_exclusion_regions_are_never_modified():
 
 
 def test_unknown_organism_skips_codon_optimization_without_crashing():
+    # Regression test for a real gap: an unrecognized organism_name silently
+    # produced the exact same "no codon optimization happened" outcome as
+    # the documented not_specified sentinel, printed (not warned) with no
+    # way for a caller to tell "you opted out" apart from "your organism
+    # name was a typo" - now a real, catchable UserWarning specifically for
+    # the genuinely-unrecognized case.
     seq = "ATG" + "TTT" * 5 + "TAA"
-    final_seq, obj_description, _ = optimization_engine(seq, organism_name="not_a_real_organism_xyz")
+
+    with pytest.warns(UserWarning, match="not_a_real_organism_xyz.*isn't a recognized"):
+        final_seq, obj_description, _ = optimization_engine(seq, organism_name="not_a_real_organism_xyz")
 
     assert len(final_seq) == len(seq)
     assert final_seq[:3] == "ATG"
+
+
+def test_not_specified_organism_skips_codon_optimization_silently():
+    # The documented "skip codon optimization" sentinel is normal, expected
+    # behavior, not a caller mistake - must NOT warn (unlike the genuinely-
+    # unrecognized-organism case above), since every call using the default
+    # organism_name would otherwise spam a warning for entirely intended
+    # behavior.
+    seq = "ATG" + "TTT" * 5 + "TAA"
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any UserWarning here fails the test
+        final_seq, _, _ = optimization_engine(seq, organism_name="not_specified")
+
+    assert len(final_seq) == len(seq)
 
 
 def test_recombination_avoidance_breaks_the_near_duplicate_pair():

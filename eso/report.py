@@ -2,6 +2,7 @@
 with per-nucleotide differences highlighted.
 """
 
+import logging
 from os import path
 
 try:
@@ -10,6 +11,8 @@ try:
     DOCX_AVAILABLE = True
 except ImportError:
     DOCX_AVAILABLE = False
+
+logger = logging.getLogger('eso.report')
 
 
 def create_word_document_with_highlighted_differences(sequences_data, output_path):
@@ -20,7 +23,8 @@ def create_word_document_with_highlighted_differences(sequences_data, output_pat
     output_path: directory in which to save 'sequence_comparison.docx'.
     """
     if not DOCX_AVAILABLE:
-        print("python-docx not available (install the 'docx-report' extra), skipping Word document generation")
+        logger.info(
+            "python-docx not available (install the 'docx-report' extra), skipping Word document generation")
         return
 
     doc = Document()
@@ -54,4 +58,4 @@ def create_word_document_with_highlighted_differences(sequences_data, output_pat
 
     doc_path = path.join(output_path, 'sequence_comparison.docx')
     doc.save(doc_path)
-    print(f"Word document saved to: {doc_path}")
+    logger.info(f"Word document saved to: {doc_path}")

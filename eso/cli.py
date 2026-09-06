@@ -1,6 +1,7 @@
 """Command-line entry point: `eso-optimize --input-folder ... --output-path ...`."""
 
 import argparse
+import logging
 import sys
 
 import numpy as np
@@ -73,11 +74,26 @@ def build_parser():
                              "examples/indexes_template.json for a copyable starting point (region "
                              "strings are 1-indexed and inclusive, e.g. \"1-6, 51-68\"). Omit to treat "
                              "entire sequences as the ORF with no exclusions.")
+    parser.add_argument('--quiet', action='store_true',
+                        help="Suppress informational messages (e.g. 'Word document saved to...') - only "
+                             "the final Success!/failure message and actual errors are still printed. "
+                             "Useful when running as part of a larger script/pipeline.")
     return parser
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    # plain, unprefixed formatting matches this CLI's existing print-style
+    # output - --quiet raises the effective level so eso's own INFO-level
+    # messages (eso.report's "saved to..."/"python-docx not available...")
+    # are suppressed without touching the final Success!/failure line below
+    # (printed directly, not logged) or an actual error's traceback.
+    # force=True: a real CLI invocation is always a fresh process (where
+    # this is a no-op concern), but tests call main() repeatedly within one
+    # process - without it, only the first call's level would ever take
+    # effect (logging.basicConfig only configures once per process by
+    # default).
+    logging.basicConfig(format='%(message)s', level=logging.WARNING if args.quiet else logging.INFO, force=True)
 
     common_motifs = [name.strip() for name in args.common_motifs.split(',')] if args.common_motifs else None
     avoid_enzymes = [name.strip() for name in args.avoid_enzymes.split(',')] if args.avoid_enzymes else ()
