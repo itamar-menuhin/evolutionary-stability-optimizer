@@ -39,7 +39,7 @@ dnachisel = "^3.2.16"
 rapidfuzz = ">=3.0,<4.0"
 
 [tool.poetry.group.dev.dependencies]
-pytest = "^8.0"
+pytest = ">=8,<10"
 python-docx = "^1.1.0"
 hypothesis = "^6.100"
 
