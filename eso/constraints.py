@@ -103,20 +103,43 @@ def recombination_to_multiple_avoidance_sites(df, exclusion_regions):
     """Translate detected recombination pairs into individual sites to mutate,
     such that mutating them breaks the Levenshtein-distance-1 relationship
     between the pair (see _indel_recombinations / _substitution_recombinations).
+
+    Ordered by descending risk (`log10_prob_recombination_ecoli`) so that if
+    optimize.py's retry loop ever has to drop constraints because not every
+    one can be satisfied, the riskiest sites were the ones DNAChisel's
+    (sequential) constraint solver got to try to satisfy first - previously
+    this was whatever order `sorted(set(...))` happened to produce (plain
+    tuple order, unrelated to risk), an accident of construction rather than
+    a deliberate "protect the worst sites first" policy.
     """
     df_copy = df[['start_1', 'end_1', 'sequence_1', 'start_2', 'end_2', 'sequence_2']].copy()
+    # optional: callers without a risk score (e.g. hand-built test input) all
+    # get the same placeholder, making the sort below a no-op rather than a
+    # KeyError - real detection output always has this column (see
+    # eso.detection.recombination.RECOMBINATION_COLUMNS).
+    df_copy['log10_prob_recombination_ecoli'] = (
+        df['log10_prob_recombination_ecoli'] if 'log10_prob_recombination_ecoli' in df.columns else 0.0
+    )
+    df_copy = df_copy.sort_values('log10_prob_recombination_ecoli', ascending=False)
     df_copy.loc[:, 'len_1'] = df_copy.sequence_1.apply(len)
     df_copy.loc[:, 'len_2'] = df_copy.sequence_2.apply(len)
 
     recombination_sites = []
+    risk_by_site = {}
     for ii in range(df_copy.shape[0]):
         row = df_copy.iloc[ii]
         if row.len_1 != row.len_2:
-            recombination_sites.extend(_indel_recombinations(row, exclusion_regions))
+            sites = _indel_recombinations(row, exclusion_regions)
         else:
-            recombination_sites.extend(_substitution_recombinations(row, exclusion_regions))
+            sites = _substitution_recombinations(row, exclusion_regions)
+        for site in sites:
+            recombination_sites.append(site)
+            # rows are already visited highest-risk-first, so the first
+            # (highest) risk seen for a given site is the one that sticks -
+            # setdefault, not overwrite.
+            risk_by_site.setdefault(site, row.log10_prob_recombination_ecoli)
 
-    recombination_sites = sorted(set(recombination_sites))
+    recombination_sites = sorted(set(recombination_sites), key=lambda site: -risk_by_site[site])
     return pd.DataFrame.from_records(data=recombination_sites, columns=['start', 'end', 'sequence'])
 
 

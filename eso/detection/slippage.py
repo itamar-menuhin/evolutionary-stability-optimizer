@@ -236,6 +236,17 @@ def modify_df_slippage(df_slippage):
     """
     df_list = []
 
+    # Highest-risk sites first, so if optimize.py's retry loop ever has to
+    # drop constraints because not every one can be satisfied, the riskiest
+    # sites were the ones DNAChisel's (sequential) constraint solver got to
+    # try to satisfy first - previously this was whatever order detection
+    # happened to produce, an accident of construction rather than a
+    # deliberate "protect the worst sites first" policy. Falls back to a
+    # no-op sort if the risk column isn't present (e.g. hand-built input
+    # without it) rather than raising - real detection output always has it.
+    if 'log10_prob_slippage_ecoli' in df_slippage.columns:
+        df_slippage = df_slippage.sort_values('log10_prob_slippage_ecoli', ascending=False)
+
     for idx in df_slippage.index:
         num_base_units = df_slippage.loc[idx].num_base_units
         length = df_slippage.loc[idx].length_base_unit

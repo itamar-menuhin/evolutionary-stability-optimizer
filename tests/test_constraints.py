@@ -221,6 +221,40 @@ def test_indel_pair_yields_no_constraint_when_both_regions_excluded():
     assert result.empty
 
 
+def test_sites_are_ordered_by_descending_risk():
+    # Regression test for a real gap: constraints used to be built in
+    # whatever order detection happened to produce (here, input row order -
+    # the lower-risk pair listed first) - not deliberately ordered by risk.
+    # Two indel-type pairs (distinct lengths so each yields exactly one site,
+    # keeping this deterministic) with the riskier one listed SECOND in the
+    # input; the result must still come back highest-risk-first.
+    df = pd.DataFrame([
+        {"start_1": 0, "end_1": 6, "sequence_1": "ACGTAC",
+         "start_2": 20, "end_2": 27, "sequence_2": "ACGTACG",
+         "log10_prob_recombination_ecoli": -5.0},  # lower risk, listed first
+        {"start_1": 40, "end_1": 46, "sequence_1": "TTGGCC",
+         "start_2": 60, "end_2": 67, "sequence_2": "TTGGCCA",
+         "log10_prob_recombination_ecoli": -1.0},  # higher risk, listed second
+    ])
+
+    result = recombination_to_multiple_avoidance_sites(df, ())
+
+    assert list(result.start) == [40, 0]
+
+
+def test_log10_prob_column_is_optional():
+    # No risk column at all (e.g. hand-built input from an older caller) -
+    # must not raise, just skip the sort.
+    df = pd.DataFrame([{
+        "start_1": 0, "end_1": 6, "sequence_1": "ACGTAC",
+        "start_2": 20, "end_2": 26, "sequence_2": "ACGTAG",
+    }])
+
+    result = recombination_to_multiple_avoidance_sites(df, ())
+
+    assert not result.empty
+
+
 # --- convert_df_to_constraints -------------------------------------------
 
 def test_empty_dataframe_returns_no_constraints():

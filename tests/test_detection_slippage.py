@@ -1,3 +1,5 @@
+import pandas as pd
+
 from eso.detection.slippage import (
     find_slippage_sites,
     find_slippage_candidates,
@@ -160,3 +162,20 @@ def test_modify_df_slippage_splits_into_alternating_units():
     df_modified = modify_df_slippage(matches)
     assert not df_modified.empty
     assert set(df_modified.sequence.unique()) == {"GC"}
+
+
+def test_modify_df_slippage_orders_sites_by_descending_risk():
+    # Regression test for a real gap: constraints were built in whatever
+    # order the input rows happened to be in - not deliberately ordered by
+    # risk. The lower-risk site is listed first here; the result must still
+    # come back highest-risk-first.
+    df = pd.DataFrame([
+        {"start": 3, "end": 9, "length_base_unit": 2, "sequence": "TGTGTG",
+         "num_base_units": 3, "log10_prob_slippage_ecoli": -5.0},  # lower risk
+        {"start": 40, "end": 46, "length_base_unit": 2, "sequence": "ACACAC",
+         "num_base_units": 3, "log10_prob_slippage_ecoli": -1.0},  # higher risk
+    ])
+
+    result = modify_df_slippage(df)
+
+    assert result.iloc[0].start == 40
