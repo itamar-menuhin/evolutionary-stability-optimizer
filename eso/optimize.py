@@ -151,7 +151,7 @@ def optimization_engine(
         df_motifs = pd.DataFrame()
 
     if len(orf_regions) == 0:
-        new_last_index = ((len(seq) - 1) // 3) * 3
+        new_last_index = (len(seq) // 3) * 3
         orf_regions = [(0, new_last_index)]
 
     if custom_score_fn is not None:

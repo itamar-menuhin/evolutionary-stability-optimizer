@@ -42,6 +42,32 @@ def test_translation_is_preserved():
     assert final_seq[-3:] in ("TAA", "TAG", "TGA")
 
 
+def test_last_codon_is_translation_protected_when_length_is_a_multiple_of_3():
+    # Regression test for a real bug: the default orf_regions computation was
+    # `((len(seq) - 1) // 3) * 3`, which for any sequence whose length is a
+    # clean multiple of 3 (the normal case - a real ORF from start to stop)
+    # excluded the final codon from EnforceTranslation entirely. Force an
+    # AvoidPattern constraint that requires the last (stop) codon itself to
+    # change: without EnforceTranslation covering it, DNAChisel is free to
+    # pick ANY replacement satisfying "not TAA" (e.g. "TAC", not a stop codon
+    # at all - a silently corrupted stop). With the fix, EnforceTranslation
+    # forces a synonymous stop (TAG or TGA), never a non-stop codon.
+    seq = "ATG" + "ATC" * 4 + "TAA"  # len=18, a multiple of 3
+    assert len(seq) % 3 == 0
+
+    df_motifs = pd.DataFrame([{
+        "start_index": 15, "end_index": 17, "matching_motif": "stop_codon",
+        "PSSM_score": 5.0, "actual_site": "TAA", "actual_site_reverse_conjugate": "TAA",
+    }])
+
+    final_seq, _, num_edits = optimization_engine(seq, df_motifs=df_motifs, organism_name="not_specified")
+
+    assert len(final_seq) == len(seq)
+    assert num_edits > 0
+    assert final_seq[-3:] != "TAA"
+    assert final_seq[-3:] in ("TAG", "TGA")
+
+
 def test_gc_content_is_enforced():
     seq = "ATG" + "AAA" * 20 + "TAA"  # far below the default 30% GC floor
     final_seq, _, _ = optimization_engine(seq, mini_gc=0.3, maxi_gc=0.7, window_size_gc=20)

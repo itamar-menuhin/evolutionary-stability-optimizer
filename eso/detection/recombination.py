@@ -8,7 +8,7 @@ paper (Jack et al. 2015, ACS Synthetic Biology, DOI: 10.1021/acssynbio.5b00068).
 
 import numpy as np
 import pandas as pd
-from Levenshtein import distance as levenshtein_distance
+from rapidfuzz.distance.Levenshtein import distance as levenshtein_distance
 
 from eso.detection._overlap import ranges_overlap, range_contains
 from eso.sequence_utils import add_backward_sites, shorten_sequences
