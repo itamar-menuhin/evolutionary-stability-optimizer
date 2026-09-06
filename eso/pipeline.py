@@ -27,7 +27,7 @@ from eso.sequence_utils import parse_region
 
 def suspect_site_extractor(target_seq, compute_motifs, num_sites, motifs_path=None,
                             common_motifs=None, recombination_mode='thorough',
-                            slippage_mode='default'):
+                            slippage_mode='default', common_motifs_pseudocount=1):
     """Detect recombination and slippage sites (and, if `compute_motifs`, methylation
     motif sites) in `target_seq`. Returns a dict of dataframes keyed by
     'df_recombination', 'df_slippage', and optionally 'df_motifs' - each
@@ -54,6 +54,11 @@ def suspect_site_extractor(target_seq, compute_motifs, num_sites, motifs_path=No
         Names from eso.detection.common_motifs.COMMON_MOTIFS (currently
         "dam", "dcm") to include alongside any `motifs_path` file. At least
         one of `motifs_path`/`common_motifs` is required if `compute_motifs`.
+    common_motifs_pseudocount: int or float
+        See eso.detection.motif_utils.motif_from_consensus - higher values
+        loosen how close a match needs to be to a bundled common motif to
+        count, for every requested common_motifs name at once. Only
+        Python-reachable so far - no CLI flag yet.
     """
     df_recombination_candidates = find_recombination_candidates(target_seq, mode=recombination_mode)
     df_slippage_candidates = find_slippage_candidates(target_seq, mode=slippage_mode)
@@ -69,7 +74,8 @@ def suspect_site_extractor(target_seq, compute_motifs, num_sites, motifs_path=No
     if compute_motifs:
         relevant_motifs = list(load_motifs(motifs_path)) if motifs_path else []
         if common_motifs:
-            relevant_motifs = relevant_motifs + load_common_motifs(common_motifs)
+            relevant_motifs = relevant_motifs + load_common_motifs(
+                common_motifs, pseudocount=common_motifs_pseudocount)
         sites_collector['df_motifs'] = find_motif_sites(target_seq, num_sites, relevant_motifs)
 
     return sites_collector

@@ -418,10 +418,14 @@ you want to flag. Needs at least one motif, from any combination of three source
     unintended internal translation initiation.
   - **Cryptic bacterial promoter elements**: `sigma70_minus35` (TTGACA),
     `sigma70_minus10` (TATAAT) - the two sigma70 hexamers; an accidental occurrence of
-    either inside a coding sequence is a classic source of unwanted transcription. Each
-    hexamer is flagged independently (a real promoter needs both, correctly spaced,
-    which this detector doesn't check for) - treat an isolated hit as a coarse screen,
-    not a confirmed cryptic promoter.
+    either inside a coding sequence is a classic source of unwanted transcription. Via
+    this `--compute-motifs`/`common_motifs` path, each hexamer is flagged independently -
+    treat an isolated hit as a coarse screen, not a confirmed cryptic promoter. For much
+    stronger evidence, call
+    `eso.detection.common_motifs.find_sigma70_promoter_pairs(seq)` directly - it checks
+    specifically for both hexamers together, strand-aware, at the biologically correct
+    ~17±1bp spacing (a real promoter needs both, correctly spaced; there's no CLI flag
+    for this one yet, it's Python-only).
   - **Not included, and why** (see the module docstring for the full explanation):
     transcription terminators (a secondary-structure property, not a fixed linear
     motif), the Kozak sequence (something to match, not avoid - a different problem),
