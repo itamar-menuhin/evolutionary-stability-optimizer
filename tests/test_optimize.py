@@ -16,8 +16,10 @@ completely untouched (0 edits, exact original sequence at that position).
 
 import warnings
 
+import dnachisel
 import pandas as pd
 import pytest
+from dnachisel.biotools import reverse_complement
 
 from eso.optimize import optimization_engine
 from eso.sequence_utils import InvalidSequenceError
@@ -294,3 +296,53 @@ def test_custom_score_is_scoped_to_orf_regions_not_the_whole_sequence():
 
     # score_fn saw exactly the ORF, nothing from the flanking "AAAAA" tail.
     assert seen == ["ATG" + "GCT" * 10 + "TAA"]
+
+
+# --- avoid_hairpins / avoid_enzymes (previously unused DNAChisel features) -
+
+def test_avoid_hairpins_removes_a_real_hairpin():
+    # DNAChisel's own AvoidHairpins/EnzymeSitePattern were installed,
+    # unused dependencies before this - a real gap for standard gene-design
+    # practice (avoiding secondary structure, and specific restriction
+    # sites for cloning). A stem immediately followed by its own reverse
+    # complement is a textbook hairpin - confirmed directly (before adding
+    # avoid_hairpins support) that DNAChisel's own AvoidHairpins reports
+    # this exact construction as a real, detected hairpin.
+    stem = "ACGTACGTACGTACG"  # 15nt
+    spacer = "T" * 9
+    hairpin_region = stem + spacer + reverse_complement(stem)
+    seq = "ATG" + hairpin_region + "TAA"
+    assert len(seq) % 3 == 0
+
+    # only the start codon is translation-protected, so AvoidHairpins is the
+    # only real constraint on the hairpin region itself - isolates exactly
+    # what's being tested from any translation-preservation interaction.
+    final_seq, _, num_edits = optimization_engine(
+        seq, organism_name='not_specified', orf_regions=((0, 3),),
+        avoid_hairpins=True, hairpin_stem_size=15, hairpin_window=60,
+        mini_gc=0.0, maxi_gc=1.0)
+
+    assert final_seq[:3] == "ATG"
+    assert num_edits > 0
+    problem_after = dnachisel.DnaOptimizationProblem(sequence=final_seq, constraints=[])
+    hairpin_check = dnachisel.AvoidHairpins(
+        stem_size=15, hairpin_window=60).initialized_on_problem(problem_after, role='constraint')
+    assert hairpin_check.evaluate(problem_after).passes
+
+
+def test_avoid_enzymes_removes_the_recognition_site():
+    seq = "ATG" + "GAATTC" * 3 + "TAA"  # a real EcoRI site (GAATTC)
+
+    final_seq, _, num_edits = optimization_engine(
+        seq, organism_name='not_specified', orf_regions=((0, 3),),
+        avoid_enzymes=['EcoRI'], mini_gc=0.0, maxi_gc=1.0)
+
+    assert final_seq[:3] == "ATG"
+    assert num_edits > 0
+    assert "GAATTC" not in final_seq
+
+
+def test_avoid_enzymes_rejects_an_unrecognized_name():
+    seq = "ATG" + "AAA" * 5 + "TAA"
+    with pytest.raises(ValueError, match="NotARealEnzyme"):
+        optimization_engine(seq, avoid_enzymes=['NotARealEnzyme'])

@@ -79,6 +79,7 @@ def reoptimize_until_stable(
         curr_seq, compute_motifs, num_sites, motifs_path, common_motifs,
         recombination_mode, slippage_mode, mini_gc, maxi_gc, method, organism_name,
         custom_score_fn, custom_score_minimize, orf_regions=(), exclusion_regions=(),
+        avoid_hairpins=False, hairpin_stem_size=20, hairpin_window=200, avoid_enzymes=(),
         max_rounds=5, on_round_start=None):
     """Repeatedly detects hotspots in `curr_seq` and re-optimizes to avoid
     them, continuing for as long as each fresh detection pass still finds
@@ -148,7 +149,9 @@ def reoptimize_until_stable(
             curr_seq, df_recombination=sites['df_recombination_raw'], df_slippage=sites['df_slippage_raw'],
             df_motifs=df_motifs, mini_gc=mini_gc, maxi_gc=maxi_gc, method=method, organism_name=organism_name,
             custom_score_fn=custom_score_fn, custom_score_minimize=custom_score_minimize,
-            orf_regions=orf_regions, exclusion_regions=exclusion_regions)
+            orf_regions=orf_regions, exclusion_regions=exclusion_regions,
+            avoid_hairpins=avoid_hairpins, hairpin_stem_size=hairpin_stem_size,
+            hairpin_window=hairpin_window, avoid_enzymes=avoid_enzymes)
         total_num_edits += num_edits
 
     cumulative_sites = {
@@ -175,7 +178,8 @@ def _extract_cai(objectives_text_summary, num_codons):
 def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
             optimize, mini_gc, maxi_gc, method, organism_name, indexes,
             recombination_mode='thorough', slippage_mode='default', common_motifs=None,
-            custom_score_fn=None, custom_score_minimize=False):
+            custom_score_fn=None, custom_score_minimize=False,
+            avoid_hairpins=False, hairpin_stem_size=20, hairpin_window=200, avoid_enzymes=()):
     """Run the two-pass optimization (CAI/GC only, then + hotspot avoidance) over
     every sequence record in `data`, and write out CSVs + a Word report to
     `output_path/<file_stem>/`.
@@ -214,7 +218,9 @@ def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
                 curr_seq, mini_gc=mini_gc, maxi_gc=maxi_gc, method=method, organism_name=organism_name,
                 custom_score_fn=custom_score_fn,
                 custom_score_minimize=custom_score_minimize,
-                orf_regions=orf_regions, exclusion_regions=exclusion_regions)
+                orf_regions=orf_regions, exclusion_regions=exclusion_regions,
+                avoid_hairpins=avoid_hairpins, hairpin_stem_size=hairpin_stem_size,
+                hairpin_window=hairpin_window, avoid_enzymes=avoid_enzymes)
             if custom_score_fn is None:
                 maximal_cai = _extract_cai(obj_description, num_codons)
 
@@ -226,7 +232,9 @@ def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
             curr_seq, obj_description_reopt, num_edits, cumulative_sites, _ = reoptimize_until_stable(
                 curr_seq, compute_motifs, num_sites, motifs_path, common_motifs,
                 recombination_mode, slippage_mode, mini_gc, maxi_gc, method, organism_name,
-                custom_score_fn, custom_score_minimize, orf_regions, exclusion_regions)
+                custom_score_fn, custom_score_minimize, orf_regions, exclusion_regions,
+                avoid_hairpins=avoid_hairpins, hairpin_stem_size=hairpin_stem_size,
+                hairpin_window=hairpin_window, avoid_enzymes=avoid_enzymes)
         else:
             cumulative_sites = suspect_site_extractor(
                 curr_seq, compute_motifs, num_sites, motifs_path, common_motifs=common_motifs,
@@ -330,7 +338,8 @@ def main(input_folder=None, output_path=None, compute_motifs=False, num_sites=np
          motifs_path=None, common_motifs=None, optimize=True, mini_gc=0.3, maxi_gc=0.7,
          method='use_best_codon', organism_name='not_specified', indexes=None,
          recombination_mode='thorough', slippage_mode='default', custom_score_fn=None,
-         custom_score_minimize=False):
+         custom_score_minimize=False, avoid_hairpins=False, hairpin_stem_size=20,
+         hairpin_window=200, avoid_enzymes=()):
     """Optimize every FASTA/GenBank file in `input_folder`, writing per-file CSVs
     of detected hotspots and the optimized sequence into `output_path`.
 
@@ -386,6 +395,14 @@ def main(input_folder=None, output_path=None, compute_motifs=False, num_sites=np
         instead of passing a function directly here.
     custom_score_minimize: bool
         See eso.optimize.optimization_engine; only used if custom_score_fn is given.
+    avoid_hairpins: bool
+        Also avoid DNAChisel's built-in secondary-structure (hairpin) pattern
+        over the whole sequence - see eso.optimize.optimization_engine.
+    hairpin_stem_size, hairpin_window: int
+        See eso.optimize.optimization_engine; only used if avoid_hairpins=True.
+    avoid_enzymes: sequence of str
+        Restriction enzyme names to avoid the recognition sites of - see
+        eso.optimize.optimization_engine and dnachisel.list_common_enzymes().
 
     Returns
     -------
@@ -410,7 +427,9 @@ def main(input_folder=None, output_path=None, compute_motifs=False, num_sites=np
             optimize=optimize, mini_gc=mini_gc, maxi_gc=maxi_gc, method=method,
             organism_name=organism_name, indexes=indexes, recombination_mode=recombination_mode,
             slippage_mode=slippage_mode, common_motifs=common_motifs, custom_score_fn=custom_score_fn,
-            custom_score_minimize=custom_score_minimize)
+            custom_score_minimize=custom_score_minimize, avoid_hairpins=avoid_hairpins,
+            hairpin_stem_size=hairpin_stem_size, hairpin_window=hairpin_window,
+            avoid_enzymes=avoid_enzymes)
         final_results.extend((file, seq_index, seq) for seq_index, seq in curr_results)
 
     return message, final_results

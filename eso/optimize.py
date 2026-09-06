@@ -91,6 +91,10 @@ def optimization_engine(
     df_motifs=None,
     orf_regions=(),
     exclusion_regions=(),
+    avoid_hairpins=False,
+    hairpin_stem_size=20,
+    hairpin_window=200,
+    avoid_enzymes=(),
 ):
     """Optimize `seq` for codon usage, GC content, and (if hotspot dataframes
     are given) avoidance of detected recombination/slippage/methylation sites,
@@ -129,6 +133,22 @@ def optimization_engine(
         whole sequence, trimmed to a multiple of 3.
     exclusion_regions: sequence of (start, end) tuples
         Regions that must not be modified.
+    avoid_hairpins: bool
+        If True, adds DNAChisel's built-in AvoidHairpins constraint (IDT's
+        secondary-structure guideline: avoid a stem whose reverse complement
+        recurs nearby) over the whole sequence - a standard gene-design
+        concern (strong secondary structure, especially over a start
+        codon/RBS, can suppress translation initiation) this library didn't
+        previously expose at all despite it being one call away in an
+        already-installed dependency.
+    hairpin_stem_size, hairpin_window: int
+        See dnachisel.AvoidHairpins; only used if avoid_hairpins=True.
+    avoid_enzymes: sequence of str
+        Restriction enzyme names (e.g. "BsaI", "EcoRI" - see
+        dnachisel.list_common_enzymes() for the full recognized list) whose
+        recognition sites should be avoided - useful when the optimized
+        sequence needs to be cloned into a specific vector/backbone. Also
+        DNAChisel functionality this library didn't previously expose.
 
     Returns
     -------
@@ -171,6 +191,20 @@ def optimization_engine(
         cnst.append(dnachisel.EnforceTranslation(location=orf))
 
     cnst.extend(dnachisel.AvoidChanges(location=region) for region in exclusion_regions)
+
+    if avoid_hairpins:
+        cnst.append(dnachisel.AvoidHairpins(stem_size=hairpin_stem_size, hairpin_window=hairpin_window))
+
+    for enzyme_name in avoid_enzymes:
+        try:
+            enzyme_pattern = dnachisel.EnzymeSitePattern(enzyme_name)
+        except KeyError:
+            raise ValueError(
+                f"'{enzyme_name}' isn't a recognized restriction enzyme name. See "
+                "dnachisel.list_common_enzymes() for the full list of recognized names "
+                "(case-sensitive, e.g. 'BsaI', 'EcoRI')."
+            ) from None
+        cnst.append(dnachisel.AvoidPattern(enzyme_pattern))
 
     if not df_recombination.empty:
         df_rec = recombination_to_multiple_avoidance_sites(df_recombination, exclusion_regions)

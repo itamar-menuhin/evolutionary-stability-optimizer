@@ -55,6 +55,19 @@ def build_parser():
                         help="Both detect identical hotspots; 'default' is also faster at every length "
                              "tested (see eso.detection.dispatch) - 'fast' is kept as an independent "
                              "cross-check implementation, not for its speed.")
+    parser.add_argument('--avoid-hairpins', action='store_true',
+                        help="Also avoid DNAChisel's built-in secondary-structure (hairpin) pattern over the "
+                             "whole sequence - a standard gene-design concern (strong hairpin structure, "
+                             "especially over a start codon/RBS, can suppress translation initiation).")
+    parser.add_argument('--hairpin-stem-size', type=int, default=20,
+                        help="See dnachisel.AvoidHairpins. Only used with --avoid-hairpins.")
+    parser.add_argument('--hairpin-window', type=int, default=200,
+                        help="See dnachisel.AvoidHairpins. Only used with --avoid-hairpins.")
+    parser.add_argument('--avoid-enzymes', default=None,
+                        help="Comma-separated restriction enzyme names whose recognition sites should be "
+                             "avoided, e.g. --avoid-enzymes BsaI,EcoRI - useful when the optimized sequence "
+                             "needs to be cloned into a specific vector/backbone. See "
+                             "dnachisel.list_common_enzymes() for the full list of recognized names.")
     parser.add_argument('--indexes-file', default=None,
                         help="Path to a JSON file specifying ORF/exclusion regions per sequence - see "
                              "examples/indexes_template.json for a copyable starting point (region "
@@ -67,6 +80,7 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
 
     common_motifs = [name.strip() for name in args.common_motifs.split(',')] if args.common_motifs else None
+    avoid_enzymes = [name.strip() for name in args.avoid_enzymes.split(',')] if args.avoid_enzymes else ()
 
     custom_score_fn = None
     if args.custom_score_file is not None:
@@ -102,6 +116,10 @@ def main(argv=None):
         slippage_mode=args.slippage_mode,
         custom_score_fn=custom_score_fn,
         custom_score_minimize=args.custom_score_minimize,
+        avoid_hairpins=args.avoid_hairpins,
+        hairpin_stem_size=args.hairpin_stem_size,
+        hairpin_window=args.hairpin_window,
+        avoid_enzymes=avoid_enzymes,
     )
     print(message)
     return 0 if message == 'Success!' else 1
