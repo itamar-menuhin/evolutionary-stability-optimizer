@@ -5,7 +5,7 @@
 # `packages = [{ include = "eso" }]` below still installs a module you
 # `import eso` exactly as before - only the install command changes.
 name = "evolutionary-stability-optimizer"
-version = "0.1.0"
+version = "0.1.1"
 description = "Evolutionary Stability Optimizer (ESO) - detects and removes hypermutable sites (recombination, slippage, methylation hotspots) from engineered DNA sequences while preserving translation and codon usage."
 authors = ["Itamar Menuhin"]
 license = "MIT"
