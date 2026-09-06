@@ -20,6 +20,17 @@ import pandas as pd
 import pytest
 
 from eso.optimize import optimization_engine
+from eso.sequence_utils import InvalidSequenceError
+
+
+def test_ambiguity_code_raises_a_clear_error_instead_of_crashing_dnachisel():
+    # Regression test for a real gap: nothing validated the sequence
+    # alphabet before this, so an IUPAC ambiguity code (here "N") crashed
+    # deep inside DNAChisel with an unhandled TranslationError - confirmed
+    # directly before this fix. Now raises a clear, catchable error instead.
+    seq = "ATG" + "NNN" * 3 + "TAA"
+    with pytest.raises(InvalidSequenceError, match=r"position 4 \('N'\)"):
+        optimization_engine(seq, organism_name="not_specified")
 
 
 def test_translation_is_preserved():

@@ -9,7 +9,7 @@ from pathlib import Path
 from Bio import SeqIO
 from dnachisel import biotools
 
-from eso.sequence_utils import parse_region
+from eso.sequence_utils import InvalidSequenceError, parse_region, validate_dna_alphabet
 
 FILE_ENDINGS = {
     'fasta': ['fasta', 'fna', 'ffn', 'faa', 'frn', 'fa'],
@@ -243,6 +243,20 @@ def test_input(mini_gc, maxi_gc, indexes, files):
         return 'The maximal GC content must be no more than 1!'
     if mini_gc >= maxi_gc:
         return 'The minimal GC content must be less than the maximum!'
+
+    # Runs unconditionally (not gated behind `indexes`, unlike the checks
+    # below) - a malformed sequence is a problem regardless of whether
+    # ORF/exclusion regions were given, and running with no indexes at all
+    # is the common case. Without this, a bad sequence isn't rejected here
+    # at all - it surfaces later as an unhandled crash deep inside DNAChisel
+    # (see eso.sequence_utils.validate_dna_alphabet's docstring).
+    for file in files:
+        filename_indexes = file_stem(file[0])
+        for ii, record in enumerate(file_opener(file)):
+            try:
+                validate_dna_alphabet(str(record.seq), sequence_label=f"{filename_indexes!r} sequence {ii}")
+            except InvalidSequenceError as e:
+                return str(e)
 
     if len(indexes) > 0:
         # only checked against a record when the (file, seq_index) key

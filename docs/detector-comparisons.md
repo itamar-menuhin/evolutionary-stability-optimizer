@@ -1737,3 +1737,57 @@ property test means "the property doesn't hold," not automatically "the
 code is wrong."
 
 Verified via a full pytest run - 186 tests passing (up from 178).
+
+## No sequence-alphabet validation anywhere - found while building a separate GUI project
+
+Found while building an unrelated companion project (a desktop GUI wrapping
+this library) and asking, for each bug the GUI's own input handling turned
+up, whether the same gap existed here too - it did, and more seriously,
+since this library has no equivalent of the GUI's own paste-box sanitization
+to mask it.
+
+**The gap.** Nothing anywhere in `eso` validated that a sequence contains
+only A/C/G/T before using it. `eso.io_utils.test_input` validates GC bounds
+and ORF/exclusion region-string formatting, but never the sequence content
+itself; `eso.optimize.optimization_engine`'s docstring merely *documents*
+`seq` as "DNA sequence (ACGT alphabet)" without enforcing it.
+
+**Confirmed failure modes, all directly reproduced:**
+- An IUPAC ambiguity code in a codon (e.g. `"NNN"`) crashes with an
+  unhandled `dnachisel.biotools.TranslationError: Codon 'NNN' is invalid`
+  once `EnforceTranslation` is in play - no eso-level message at all.
+- The same input, before translation is checked (GC-content constraints
+  alone), instead crashes with a bare `KeyError` from a different spot
+  inside DNAChisel - a different, equally unhelpful failure for the same
+  root cause.
+- Neither exception type is one the constraint-retry loop in
+  `optimization_engine` catches (`NoSolutionError`, or the specific
+  `AttributeError` documented next to `_LOCALIZED_NONE_CRASH_MESSAGE`), so
+  both propagate all the way up through `eso.pipeline.backend`/`main` and
+  `eso.cli.main`, ending the CLI with a raw traceback.
+- Separately, and worse because it doesn't crash at all:
+  `eso.io_utils.exclusion_gc_tester`'s GC-content check (part of
+  `test_input`'s own validation) silently *miscalculates* on an ambiguity
+  code instead of erroring - confirmed directly, a sequence of all `"R"`s
+  (A-or-G, GC content genuinely undefined) "measured" as ~4.8% GC. A
+  confidently wrong number is worse than a crash: it can pass or fail GC
+  validation for the wrong reason with no indication anything was wrong
+  with the input.
+
+**The fix.** Added `eso.sequence_utils.validate_dna_alphabet` (plus a small
+`first_invalid_base` helper) and a new `InvalidSequenceError`, and wired it
+into both:
+- `eso.optimize.optimization_engine`, at the very top, before anything
+  else runs - this is the lowest-level entry point, so it protects both the
+  file-based CLI/pipeline path *and* any direct API caller (like the
+  desktop-GUI project this was found from, which calls
+  `optimization_engine` directly rather than through `eso.pipeline.main`).
+- `eso.io_utils.test_input`, as a new unconditional check (not gated behind
+  `indexes` being non-empty, unlike the ORF/exclusion checks next to it -
+  a bad sequence is a problem regardless of whether ORF/exclusion regions
+  were given, and running with no indexes at all is the common case) - so
+  CLI/file-based users get the friendlier pre-flight message before
+  optimization ever starts, instead of only the crash-path message from
+  deep inside `optimization_engine`.
+
+Verified via a full pytest run - 195 tests passing (up from 186).

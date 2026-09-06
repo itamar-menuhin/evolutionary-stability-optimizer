@@ -16,6 +16,7 @@ from eso.constraints import (
 )
 from eso.custom_score import CustomScore
 from eso.detection.slippage import modify_df_slippage
+from eso.sequence_utils import validate_dna_alphabet
 
 # Substring DNAChisel raises when an AvoidPattern's location doesn't align to
 # the codon grid under EnforceTranslation: DnaOptimizationProblem.resolve_constraint
@@ -133,6 +134,15 @@ def optimization_engine(
     -------
     (final_sequence, objectives_summary, num_edits)
     """
+    # Nothing downstream validates this - confirmed directly that an IUPAC
+    # ambiguity code (e.g. "N", "R") crashes deep inside DNAChisel with an
+    # unhandled TranslationError or KeyError depending on which constraint
+    # reaches it first, with no eso-level message at all. Checked here, at
+    # the lowest-level entry point, so both the file-based CLI/pipeline path
+    # (which also checks earlier, in eso.io_utils.test_input, for a
+    # friendlier pre-flight message) and any direct API caller are covered.
+    validate_dna_alphabet(seq)
+
     if df_recombination is None:
         df_recombination = pd.DataFrame()
     if df_slippage is None:

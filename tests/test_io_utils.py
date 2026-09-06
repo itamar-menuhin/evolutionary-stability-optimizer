@@ -63,6 +63,31 @@ def test_valid_orf_region_with_no_exclusion_succeeds(tmp_path):
     assert result == 'Success!'
 
 
+# --- test_input: sequence alphabet validation (regression) ---------------
+
+def test_ambiguity_code_in_sequence_is_rejected_even_with_no_indexes(tmp_path):
+    # Regression test for a real gap: nothing validated the sequence
+    # alphabet, so a sequence with an IUPAC ambiguity code (or any stray
+    # non-ACGT character) passed this pre-flight check silently and only
+    # surfaced later as an unhandled crash deep inside DNAChisel. This check
+    # must run even with indexes={} (the common case), not just when ORF/
+    # exclusion regions are given.
+    file_path = tmp_path / 'gene.fasta'
+    file_path.write_text('>x\nATGNNNTAA\n')
+
+    result = validate_input(0.3, 0.7, {}, [(str(file_path), 'fasta')])
+    assert "contains a letter other than A, C, G, T" in result
+    assert "position 4" in result and "'N'" in result
+
+
+def test_valid_sequence_with_no_indexes_is_not_flagged(tmp_path):
+    file_path = tmp_path / 'gene.fasta'
+    file_path.write_text('>x\nATGGCTTAA\n')
+
+    result = validate_input(0.3, 0.7, {}, [(str(file_path), 'fasta')])
+    assert result == 'Success!'
+
+
 # --- test_input: exclusion region validation (regression) ---------------
 
 def test_malformed_exclusion_region_is_actually_rejected():
