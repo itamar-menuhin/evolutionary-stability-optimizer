@@ -3,11 +3,13 @@ import pytest
 
 from eso.detection.recombination import (
     find_recombination_sites,
+    find_recombination_candidates,
     calc_recombination_score,
     collapse_recombination_sites,
     recombination_sites_for_constraints,
     _elongate_sites,
 )
+from eso.sequence_utils import reverse_complement_seq
 
 # non-repetitive spacer: a homopolymer/simple-repeat spacer would itself be a
 # genuine (distinct) slippage/recombination hotspot and pollute row counts.
@@ -71,6 +73,65 @@ def test_distinct_hotspots_are_not_merged_into_each_other():
     found_sequences = set(df.sequence_1) | set(df.sequence_2)
     assert any(site_a in s for s in found_sequences)
     assert any(site_b in s for s in found_sequences)
+
+
+def test_direct_repeat_candidates_are_labeled_direct_strand():
+    # find_recombination_candidates' output must carry the new strand field
+    # (issue #17) so a caller can audit that only direct repeats were used
+    # to build correction constraints.
+    site = "ACGTGGCATTAGCTAGCCTA"  # 20nt
+    seq = "ATGCATGCAT" + site + SPACER + site + "TTGGCCAATT"
+
+    df = find_recombination_candidates(seq)
+
+    assert not df.empty
+    assert set(df.strand) == {'direct'}
+
+
+def test_inverted_repeat_pair_is_excluded_from_candidates():
+    # issue #17: calc_recombination_score is Oliveira et al. 2008's formula
+    # for RecA-mediated deletion between DIRECT repeats specifically. An
+    # inverted repeat (a site paired with its own reverse complement) is a
+    # mechanistically different hazard (hairpin/cruciform formation, not
+    # RecA-mediated deletion) that this formula does not model, so it must
+    # not surface anywhere in the real detection/scoring/correction output.
+    site = "ACGTGGCATTAGCTAGCCTA"  # 20nt
+    seq = "ATGCATGCAT" + site + SPACER + reverse_complement_seq(site) + "TTGGCCAATT"
+
+    df = find_recombination_candidates(seq)
+
+    assert df.empty
+    # sanity check: this sequence really does contain a detectable
+    # inverted-repeat pair pre-filtering, so an empty result here is the
+    # strand filter doing its job, not an unrelated absence of any match.
+    from eso.detection.recombination import _generate_relevant_pairs_fast
+    raw_pairs = _generate_relevant_pairs_fast(seq)
+    assert (raw_pairs.strand == 'inverted').any()
+
+
+def test_direct_repeat_still_detected_alongside_an_unrelated_inverted_repeat():
+    # Regression check that the strand filter added for issue #17 does not
+    # affect same-strand (direct-repeat) detection: a genuine direct-repeat
+    # hotspot is still found and scored even when the sequence also
+    # contains an unrelated inverted-repeat pair elsewhere, and the
+    # inverted pair must not leak into the output alongside it.
+    site = "ACGTGGCATTAGCTAGCCTA"  # 20nt, genuine direct repeat
+    site_b = "TTGACCGGAATCCGTTAGCA"  # distinct 20nt site, used as an inverted repeat
+    spacer_2 = "GTAGCTAACGATTGCGATCCGTAACTAGGA"
+    seq = (
+        "ATGCATGCAT" + site + SPACER + site
+        + "GCGCGCTTAACC" + site_b + spacer_2 + reverse_complement_seq(site_b)
+        + "TTGGCCAATT"
+    )
+
+    df = find_recombination_candidates(seq)
+
+    assert not df.empty
+    assert set(df.strand) == {'direct'}
+    found_sequences = set(df.sequence_1) | set(df.sequence_2)
+    assert any(site in s for s in found_sequences)
+    assert not any(site_b in s for s in found_sequences)
+    assert not any(reverse_complement_seq(site_b) in s for s in found_sequences)
 
 
 def test_partially_overlapping_pairs_both_kept_for_constraints():

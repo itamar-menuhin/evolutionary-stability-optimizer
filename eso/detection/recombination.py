@@ -25,7 +25,7 @@ _SEED_LENGTHS = (16, 17)
 # (sequence_1/sequence_2, not a single 'sequence' column)
 RECOMBINATION_COLUMNS = [
     'sequence_1', 'start_1', 'end_1', 'sequence_2', 'start_2', 'end_2',
-    'location_delta', 'site_length', 'log10_prob_recombination_ecoli',
+    'location_delta', 'site_length', 'log10_prob_recombination_ecoli', 'strand',
 ]
 
 
@@ -167,10 +167,14 @@ def _deletion_signatures(s):
 
 
 def _all_windows_both_strands(seq, length):
-    """(sequence, start, end) for every window of `length` at every position
-    in seq, forward orientation, PLUS the reverse complement of each
-    (same coordinates, RC content) - recombination can occur between a
-    site and an inverted-repeat partner, not just a directly-repeated one.
+    """(sequence, start, end, strand) for every window of `length` at every
+    position in seq, forward orientation, PLUS the reverse complement of each
+    (same coordinates, RC content, strand='backward') - recombination can
+    occur between a site and an inverted-repeat partner, not just a
+    directly-repeated one, so both must still be findable as candidates.
+    The strand tag is what lets a forward-forward match (direct repeat) be
+    told apart from a forward-backward match (inverted repeat) later - see
+    _generate_relevant_pairs_fast.
     """
     # `end` is the INCLUSIVE index of the window's last character (start +
     # length - 1), matching _generate_all_recombination_sites_slow's own
@@ -185,20 +189,20 @@ def _all_windows_both_strands(seq, length):
     # boundary positions on every tested case, including one past the end
     # of the sequence itself).
     n = len(seq)
-    forward = [(seq[i:i + length], i, i + length - 1) for i in range(n - length + 1)]
-    backward = [(reverse_complement_seq(s), start, end) for s, start, end in forward]
+    forward = [(seq[i:i + length], i, i + length - 1, 'forward') for i in range(n - length + 1)]
+    backward = [(reverse_complement_seq(s), start, end, 'backward') for s, start, end, _ in forward]
     return forward + backward
 
 
 def _build_signature_index(windows):
-    """windows: iterable of (sequence, start, end). Returns
-    signature -> list of (sequence, start, end) for every window whose
-    _deletion_signatures includes that signature.
+    """windows: iterable of (sequence, start, end, strand). Returns
+    signature -> list of (sequence, start, end, strand) for every window
+    whose _deletion_signatures includes that signature.
     """
     index = {}
-    for sequence, start, end in windows:
+    for sequence, start, end, strand in windows:
         for signature in _deletion_signatures(sequence):
-            index.setdefault(signature, []).append((sequence, start, end))
+            index.setdefault(signature, []).append((sequence, start, end, strand))
     return index
 
 
@@ -231,6 +235,17 @@ def _generate_relevant_pairs_fast(seq):
     only one such seed needs to be found for elongation to recover the
     full site - matching _generate_all_recombination_sites_slow's own
     forward-16nt-only query set (df_first_sites).
+
+    Each returned pair also carries a 'strand' label: 'direct' if the match
+    came from a forward-orientation window (site_2 is a same-strand
+    near-duplicate of site_1 - the only case Oliveira et al. 2008's
+    RecA-mediated-deletion formula, calc_recombination_score, is calibrated
+    for), or 'inverted' if it came from a reverse-complement window (site_2
+    is an inverted repeat of site_1 - a mechanistically different hazard,
+    hairpin/cruciform formation rather than RecA-mediated deletion, that the
+    same formula does not model). Since every seed window here is itself
+    forward-orientation, this is fully determined by which pool (forward or
+    backward) the OTHER site of the pair was matched from.
     """
     # See _all_windows_both_strands for why `end` is inclusive (start + 15,
     # not start + 16) here.
@@ -246,10 +261,18 @@ def _generate_relevant_pairs_fast(seq):
     for sequence_1, start_1, end_1 in seed_windows:
         candidates = {}
         for signature in _deletion_signatures(sequence_1):
-            for sequence_2, start_2, end_2 in index.get(signature, ()):
-                candidates[(start_2, end_2, sequence_2)] = None
+            for sequence_2, start_2, end_2, strand_2 in index.get(signature, ()):
+                candidates.setdefault((start_2, end_2, sequence_2), set()).add(strand_2)
 
-        for start_2, end_2, sequence_2 in candidates:
+        for (start_2, end_2, sequence_2), strands_2 in candidates.items():
+            # A window reachable via the backward (reverse-complement) pool
+            # at all is treated as an inverted-repeat match even if it's
+            # ALSO reachable via the forward pool (only possible for a
+            # self-reverse-complementary/palindromic window) - erring toward
+            # "not a direct repeat" rather than risk misapplying the
+            # RecA-mediated-deletion formula to a pair that can equally be
+            # read as an inverted repeat.
+            strand = 'inverted' if 'backward' in strands_2 else 'direct'
             if start_1 <= start_2:
                 seq_a, start_a, end_a = sequence_1, start_1, end_1
                 seq_b, start_b, end_b = sequence_2, start_2, end_2
@@ -268,10 +291,11 @@ def _generate_relevant_pairs_fast(seq):
                 continue  # signature-sharing false positive - see _deletion_signatures
 
             seen_pairs.add(pair_key)
-            pairs.append((seq_a, start_a, end_a, seq_b, start_b, end_b))
+            pairs.append((seq_a, start_a, end_a, seq_b, start_b, end_b, strand))
 
     return pd.DataFrame.from_records(
-        pairs, columns=['sequence_1', 'start_1', 'end_1', 'sequence_2', 'start_2', 'end_2'])
+        pairs,
+        columns=['sequence_1', 'start_1', 'end_1', 'sequence_2', 'start_2', 'end_2', 'strand'])
 
 
 def _elongate_sites(row, full_seq):
@@ -441,7 +465,14 @@ def find_recombination_candidates(seq):
     collapsing overlapping pairs down to one representative per real hotspot.
 
     A pair of sites is a candidate if both are >=16nt, within Levenshtein
-    distance 1 of each other, and non-overlapping.
+    distance 1 of each other, non-overlapping, and on the SAME strand
+    (a direct repeat) - calc_recombination_score is Oliveira et al. 2008's
+    formula for RecA-mediated deletion between direct repeats specifically,
+    and does not model inverted-repeat hazards (hairpin/cruciform formation),
+    so cross-strand ('inverted', see _generate_relevant_pairs_fast) pairs are
+    dropped here before elongation/scoring rather than merely labelled -
+    they must never reach calc_recombination_score or the downstream
+    correction-constraint pipeline (recombination_sites_for_constraints).
 
     This is the shared base both find_recombination_sites (collapsed report
     view) and recombination_sites_for_constraints (constraint-building view)
@@ -455,6 +486,7 @@ def find_recombination_candidates(seq):
     empty_df = pd.DataFrame(columns=RECOMBINATION_COLUMNS)
 
     df_pairs = _generate_relevant_pairs_fast(seq)
+    df_pairs = df_pairs[df_pairs.strand == 'direct'].reset_index(drop=True)
 
     if df_pairs.shape[0] == 0:
         return empty_df
