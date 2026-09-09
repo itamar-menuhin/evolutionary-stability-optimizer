@@ -79,6 +79,42 @@ def test_network_failure_gives_friendly_message():
             resolve_assembly_accession("Escherichia coli")
 
 
+def test_connection_reset_gives_friendly_message():
+    # Regression test for a real gap: ConnectionResetError isn't a
+    # urllib.error.URLError subclass, so it used to crash raw instead of
+    # this function's own documented GenomeFetchError. Confirmed directly
+    # before this fix.
+    with patch('urllib.request.urlopen', side_effect=ConnectionResetError('reset')):
+        with pytest.raises(GenomeFetchError, match="Could not look up"):
+            resolve_assembly_accession("Escherichia coli")
+
+
+class _FakeNonJsonResponse:
+    def __init__(self, body):
+        self._body = body
+
+    def read(self, size=None):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+def test_non_json_response_gives_friendly_message():
+    # Regression test for a real gap: NCBI (or an intermediary) returning an
+    # error page as HTML/plain text instead of JSON - a real, plausible
+    # outage/maintenance/rate-limiting response - used to crash with a raw,
+    # unhelpful json.JSONDecodeError instead of naming NCBI as the likely
+    # cause. Confirmed directly before this fix.
+    body = b"<html><body>503 Service Unavailable</body></html>"
+    with patch('urllib.request.urlopen', return_value=_FakeNonJsonResponse(body)):
+        with pytest.raises(GenomeFetchError, match="isn't valid JSON"):
+            resolve_assembly_accession("Escherichia coli")
+
+
 def test_fetch_genome_package_for_skips_resolution_for_an_accession_shaped_input(monkeypatch):
     called = {"resolve": False, "fetch": None}
 

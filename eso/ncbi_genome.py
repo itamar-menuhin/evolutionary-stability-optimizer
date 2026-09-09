@@ -14,6 +14,7 @@ already-working NCBI-fetch code) - stdlib-only (urllib + zipfile), no new
 dependency.
 """
 
+import http.client
 import json
 import re
 import urllib.error
@@ -76,7 +77,16 @@ def _download(url, dest):
                 if not chunk:
                     break
                 handle.write(chunk)
-    except (urllib.error.URLError, TimeoutError) as exc:
+    # Confirmed real gap: URLError/TimeoutError alone only catches failures at
+    # connection-open time. A genuine multi-second, multi-MB transfer (this
+    # module's own docstring: "1.5-8.7s for three real test organisms") can
+    # just as plausibly drop mid-download - a connection reset raises a plain
+    # OSError subclass (ConnectionResetError, not a URLError), and the server
+    # closing early raises http.client.IncompleteRead (not a URLError either,
+    # its own separate exception hierarchy) - neither was caught here, so
+    # either would have crashed with a raw, unhandled exception instead of
+    # this function's own documented GenomeFetchError.
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
         tmp.unlink(missing_ok=True)
         raise GenomeFetchError(
             f"Could not fetch the NCBI genome package from {url!r}. This is usually either "
@@ -202,12 +212,32 @@ def resolve_assembly_accession(species_name_or_taxid):
     """
     url = _NCBI_TAXON_REPORT_URL_TEMPLATE.format(name_or_taxid=urllib.parse.quote(str(species_name_or_taxid)))
     try:
+        # See _download's identical fix: URLError/TimeoutError alone misses a
+        # connection dropping mid-response (ConnectionResetError, an OSError
+        # subclass but not a URLError one) and a truncated read
+        # (http.client.IncompleteRead, its own separate hierarchy).
         with urllib.request.urlopen(url, timeout=30) as response:
-            data = json.loads(response.read())
-    except (urllib.error.URLError, TimeoutError) as exc:
+            raw = response.read()
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
         raise GenomeFetchError(
             f"Could not look up '{species_name_or_taxid}' on NCBI - this is usually a network "
             f"problem. The underlying error was: {exc!r}."
+        ) from exc
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        # Confirmed real: NCBI (or an intermediary proxy) returning an error
+        # page - maintenance, rate-limiting, an outage - as HTML/plain text
+        # instead of JSON isn't a network-level failure urlopen itself would
+        # catch, but json.loads on it raises unhelpfully with no indication
+        # this was an NCBI-side response problem rather than a malformed
+        # species name.
+        raise GenomeFetchError(
+            f"NCBI returned something that isn't valid JSON when looking up "
+            f"'{species_name_or_taxid}' - this usually means NCBI itself is having a problem "
+            f"(maintenance, rate-limiting, an outage), not that the name/TaxID is wrong. Try "
+            f"again in a moment, or check https://www.ncbi.nlm.nih.gov/datasets/genome directly."
         ) from exc
 
     reports = data.get('reports', [])

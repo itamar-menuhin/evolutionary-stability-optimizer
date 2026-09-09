@@ -61,6 +61,50 @@ def test_network_failure_gives_friendly_message(tmp_path):
             fetch_genome_package('GCF_000005845.2', dest_dir=tmp_path)
 
 
+class _DroppedConnectionResponse(_FakeResponse):
+    """Returns one real (partial) chunk successfully, then raises on the next
+    read - simulating a connection dropping mid-download, a genuine failure
+    mode for a real, multi-second, multi-MB transfer, distinct from a
+    failure at connection-open time (already covered by URLError)."""
+
+    def __init__(self, data, error):
+        super().__init__(data)
+        self._error = error
+        self._reads = 0
+
+    def read(self, size):
+        self._reads += 1
+        if self._reads > 1:
+            raise self._error
+        return super().read(size)
+
+
+def test_connection_reset_mid_download_gives_friendly_message(tmp_path):
+    # Regression test for a real gap: ConnectionResetError isn't a
+    # urllib.error.URLError subclass, so a connection dropping mid-transfer
+    # (not at connection-open time, which URLError alone does cover) used to
+    # crash with a raw, unhandled exception instead of this function's own
+    # documented GenomeFetchError. Confirmed directly before this fix.
+    response = _DroppedConnectionResponse(_fake_zip_bytes('GCF_000005845.2'), ConnectionResetError('reset'))
+    with patch('urllib.request.urlopen', return_value=response):
+        with pytest.raises(GenomeFetchError, match='Could not fetch'):
+            fetch_genome_package('GCF_000005845.2', dest_dir=tmp_path)
+
+
+def test_incomplete_read_mid_download_gives_friendly_message(tmp_path):
+    # Same real gap, via the OTHER exception http.client can raise for a
+    # transfer that ends early (the server itself closing the connection
+    # before the declared content length is reached) - also not a URLError
+    # subclass.
+    import http.client
+
+    response = _DroppedConnectionResponse(
+        _fake_zip_bytes('GCF_000005845.2'), http.client.IncompleteRead(b'partial'))
+    with patch('urllib.request.urlopen', return_value=response):
+        with pytest.raises(GenomeFetchError, match='Could not fetch'):
+            fetch_genome_package('GCF_000005845.2', dest_dir=tmp_path)
+
+
 def test_not_a_zip_file_gives_friendly_message(tmp_path):
     with patch('urllib.request.urlopen', return_value=_FakeResponse(b'not actually a zip file')):
         with pytest.raises(GenomeFetchError, match="isn't a valid genome-package zip"):
