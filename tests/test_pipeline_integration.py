@@ -248,6 +248,6 @@ def test_report_csvs_are_always_written_even_for_a_clean_sequence(tmp_path):
     df = pd.read_csv(out_dir / "recombination_sites.csv")
     assert list(df.columns) == [
         'sequence_1', 'start_1', 'end_1', 'sequence_2', 'start_2', 'end_2',
-        'location_delta', 'site_length', 'log10_prob_recombination_ecoli', 'sequence_number',
+        'location_delta', 'site_length', 'log10_prob_recombination_ecoli', 'strand', 'sequence_number',
     ]
     assert len(df) == 0
