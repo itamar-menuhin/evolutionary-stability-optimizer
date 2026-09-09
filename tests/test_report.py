@@ -91,3 +91,39 @@ def test_identical_sequences_have_no_highlights(tmp_path):
     body_paragraphs = [p for p in doc.paragraphs if p.style.name == 'Normal']
     for paragraph in body_paragraphs:
         assert _highlighted_chars(paragraph) == []
+
+
+def test_contiguous_differences_are_grouped_into_one_run_not_one_per_character(tmp_path):
+    # Regression test for a real inefficiency, fixed: this used to create one
+    # docx run per nucleotide regardless of whether neighboring characters
+    # shared the same highlight state - for even a moderately long real
+    # sequence, thousands of separate XML runs. Now a contiguous stretch of
+    # differing (or matching) positions is a single run. A 100nt sequence
+    # differing only in one contiguous 20nt block should produce exactly 3
+    # runs per paragraph (before/diff/after), not 100.
+    original = 'A' * 40 + 'C' * 20 + 'A' * 40
+    final = 'A' * 40 + 'G' * 20 + 'A' * 40
+    create_word_document_with_highlighted_differences(
+        [('gene', original, final)], str(tmp_path))
+    doc = Document(str(tmp_path / 'sequence_comparison.docx'))
+
+    body_paragraphs = [p for p in doc.paragraphs if p.style.name == 'Normal']
+    original_paragraph, final_paragraph = body_paragraphs[0], body_paragraphs[1]
+
+    assert len(original_paragraph.runs) == 3
+    assert [r.text for r in original_paragraph.runs] == ['A' * 40, 'C' * 20, 'A' * 40]
+    assert _highlighted_chars(original_paragraph) == ['C' * 20]
+
+    assert len(final_paragraph.runs) == 3
+    assert [r.text for r in final_paragraph.runs] == ['A' * 40, 'G' * 20, 'A' * 40]
+    assert _highlighted_chars(final_paragraph) == ['G' * 20]
+
+
+def test_empty_sequence_produces_no_runs(tmp_path):
+    create_word_document_with_highlighted_differences(
+        [('gene', '', '')], str(tmp_path))
+    doc = Document(str(tmp_path / 'sequence_comparison.docx'))
+
+    body_paragraphs = [p for p in doc.paragraphs if p.style.name == 'Normal']
+    assert body_paragraphs[0].runs == []
+    assert body_paragraphs[1].runs == []

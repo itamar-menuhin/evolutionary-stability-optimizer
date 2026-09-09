@@ -15,6 +15,39 @@ except ImportError:
 logger = logging.getLogger('eso.report')
 
 
+def _add_highlighted_runs(paragraph, seq, other_seq):
+    """Add `seq` to `paragraph` as a run per contiguous stretch of positions
+    that all differ from `other_seq`, or all match it - not one run per
+    character. A per-character run is what this used to do: for even a
+    moderately long real sequence (hundreds to thousands of nt) that's
+    thousands of separate `<w:r>` XML elements in the generated .docx - real,
+    measurable overhead and file bloat, not just a style choice, for
+    something python-docx already lets a single `add_run` call cover.
+    A position past the end of `other_seq` is treated as "not differing"
+    (unhighlighted) - matches this module's pre-existing behavior; eso's own
+    optimization is always substitution-based (DNAChisel never changes
+    sequence length), so `seq`/`other_seq` are the same length in every real
+    call from eso.pipeline, and this only matters for a hand-built call with
+    mismatched lengths.
+    """
+    if not seq:
+        return
+
+    def differs(i):
+        return i < len(other_seq) and seq[i] != other_seq[i]
+
+    start = 0
+    current_state = differs(0)
+    for i in range(1, len(seq) + 1):
+        state = differs(i) if i < len(seq) else not current_state
+        if state != current_state:
+            run = paragraph.add_run(seq[start:i])
+            if current_state:
+                run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+            start = i
+            current_state = state
+
+
 def create_word_document_with_highlighted_differences(sequences_data, output_path):
     """
     Parameters
@@ -39,15 +72,8 @@ def create_word_document_with_highlighted_differences(sequences_data, output_pat
         doc.add_heading('Final Sequence:', level=2)
         final_paragraph = doc.add_paragraph()
 
-        for i, char in enumerate(original_seq):
-            run = original_paragraph.add_run(char)
-            if i < len(final_seq) and char != final_seq[i]:
-                run.font.highlight_color = WD_COLOR_INDEX.YELLOW
-
-        for i, char in enumerate(final_seq):
-            run = final_paragraph.add_run(char)
-            if i < len(original_seq) and char != original_seq[i]:
-                run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+        _add_highlighted_runs(original_paragraph, original_seq, final_seq)
+        _add_highlighted_runs(final_paragraph, final_seq, original_seq)
 
         # was `if seq_name != sequences_data[-1][0]` - compared by name, so a
         # sequence whose name happened to match the true last entry's name
