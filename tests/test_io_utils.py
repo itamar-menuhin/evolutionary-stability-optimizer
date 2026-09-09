@@ -149,6 +149,41 @@ def test_orf_region_past_sequence_end_is_not_flagged_for_an_unmatched_index_key(
     assert result == 'Success!'
 
 
+# --- test_input: same file_stem from different subfolders (regression) ----
+
+def test_same_named_files_in_different_subfolders_are_rejected(tmp_path):
+    # Regression test for a real, reachable bug: relevant_file_paths supports
+    # files nested one level under input_folder, but file_stem only looks at
+    # the basename - two files named "gene.fasta" in different subfolders
+    # collapse to the identical stem "gene", so eso.pipeline.backend would
+    # both apply the same `indexes` entry to two different sequences AND
+    # write both to the same output_path/gene/ directory, one silently
+    # overwriting the other. Confirmed directly before this fix.
+    sub_a, sub_b = tmp_path / 'batch_a', tmp_path / 'batch_b'
+    sub_a.mkdir()
+    sub_b.mkdir()
+    (sub_a / 'gene.fasta').write_text('>a\n' + 'ACGT' * 15 + '\n')
+    (sub_b / 'gene.fasta').write_text('>b\n' + 'TTTT' * 15 + '\n')
+
+    files = [(str(sub_a / 'gene.fasta'), 'fasta'), (str(sub_b / 'gene.fasta'), 'fasta')]
+    result = validate_input(0.3, 0.7, {}, files)
+
+    assert 'same name' in result
+    assert "'gene'" in result
+
+
+def test_same_named_file_appearing_twice_in_the_files_list_is_not_flagged(tmp_path):
+    # The check must compare across genuinely DIFFERENT paths, not just flag
+    # any repeated stem - the same (path, filetype) tuple appearing twice in
+    # `files` (which relevant_file_paths itself would never produce, but
+    # nothing stops a caller building `files` some other way) isn't a real
+    # collision.
+    file_path = tmp_path / 'f.fasta'
+    file_path.write_text('>x\n' + 'ACGT' * 15 + '\n')
+    files = [(str(file_path), 'fasta'), (str(file_path), 'fasta')]
+    assert validate_input(0.3, 0.7, {}, files) == 'Success!'
+
+
 # --- relevant_file_paths ---------------------------------------------------
 
 def test_finds_files_directly_in_and_one_level_under_input_folder(tmp_path):
@@ -280,4 +315,19 @@ def test_load_indexes_from_file_entry_missing_required_key_raises_friendly_error
     file_path.write_text('[{"file": "my_gene"}]')
 
     with pytest.raises(IndexesFileError, match='"file" and "seq_index" keys'):
+        load_indexes_from_file(str(file_path))
+
+
+def test_load_indexes_from_file_duplicate_file_and_seq_index_raises_friendly_error(tmp_path):
+    # Regression test for a real gap: a duplicate (file, seq_index) pair -
+    # e.g. a copy-pasted entry where the seq_index wasn't updated - used to
+    # silently overwrite the earlier entry with no warning at all, hiding
+    # what's very plausibly a real mistake.
+    file_path = tmp_path / 'indexes.json'
+    file_path.write_text(
+        '[{"file": "my_gene", "seq_index": "0", "orf_regions": "1-6"}, '
+        '{"file": "my_gene", "seq_index": "0", "orf_regions": "7-12"}]'
+    )
+
+    with pytest.raises(IndexesFileError, match="more than one entry"):
         load_indexes_from_file(str(file_path))

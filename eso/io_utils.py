@@ -88,6 +88,17 @@ def load_indexes_from_file(file_path):
                 f'"seq_index" keys - got {entry!r}.')
 
         key = (str(entry['file']), str(entry['seq_index']))
+        if key in indexes:
+            # Confirmed real gap: a duplicate (file, seq_index) pair - e.g. a
+            # copy-pasted entry where the seq_index wasn't updated - used to
+            # silently overwrite the earlier entry with no warning at all,
+            # hiding what's very plausibly a real mistake (which one was
+            # meant to apply is now unrecoverable from the file alone).
+            raise IndexesFileError(
+                f"'{file_path}' has more than one entry for file={key[0]!r}, seq_index={key[1]!r} "
+                f"(entry {ii} duplicates an earlier one) - each (file, seq_index) pair may only appear "
+                "once. Remove or fix whichever entry was a mistake."
+            )
         orf_regions = str(entry.get('orf_regions', ''))
         exclusion_regions = str(entry.get('exclusion_regions', ''))
         indexes[key] = (orf_regions, exclusion_regions)
@@ -137,8 +148,9 @@ def relevant_file_paths(input_folder=None):
         input_folder = os.getcwd()
     input_as_path = Path(input_folder)
 
-    candidates = [p for p in input_as_path.glob('*') if p.is_file()]
-    for entry in input_as_path.glob('*'):
+    top_level_entries = list(input_as_path.glob('*'))
+    candidates = [p for p in top_level_entries if p.is_file()]
+    for entry in top_level_entries:
         if entry.is_dir():
             candidates.extend(p for p in entry.glob('*') if p.is_file())
 
@@ -243,6 +255,32 @@ def test_input(mini_gc, maxi_gc, indexes, files):
         return 'The maximal GC content must be no more than 1!'
     if mini_gc >= maxi_gc:
         return 'The minimal GC content must be less than the maximum!'
+
+    # Confirmed real, reachable bug: relevant_file_paths supports files nested
+    # one level under input_folder (e.g. organized into per-batch
+    # subfolders), but file_stem only ever looks at the basename - two files
+    # with the same name in different subfolders (e.g. "batch_a/gene.fasta"
+    # and "batch_b/gene.fasta") collapse to the identical stem "gene".
+    # Reaching eso.pipeline.backend, this both looks up the exact same
+    # `indexes` entry for two genuinely different sequences AND writes both
+    # to the exact same output_path/gene/ directory - one file's results
+    # silently overwriting the other's, with no warning at all. Confirmed
+    # directly (relevant_file_paths on two same-named files in different
+    # subfolders returns the same stem for both) before adding this check,
+    # which catches it here, before any output is written or any `indexes`
+    # entry is misapplied, rather than letting it happen silently.
+    stems_seen = {}
+    for file in files:
+        stem = file_stem(file[0])
+        if stem in stems_seen and stems_seen[stem] != file[0]:
+            return (
+                f"Two different input files both resolve to the same name {stem!r} once their folder "
+                f"and extension are stripped ({stems_seen[stem]!r} and {file[0]!r}) - their results would "
+                "silently overwrite each other and their ORF/exclusion regions (if any) would be "
+                "impossible to tell apart. Rename one of them, or move it out of its subfolder, so every "
+                "input file has a unique name."
+            )
+        stems_seen[stem] = file[0]
 
     # Runs unconditionally (not gated behind `indexes`, unlike the checks
     # below) - a malformed sequence is a problem regardless of whether
