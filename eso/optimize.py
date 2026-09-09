@@ -43,6 +43,73 @@ from eso.sequence_utils import validate_dna_alphabet
 # NoSolutionError-with-no-named-constraint case.
 _LOCALIZED_NONE_CRASH_MESSAGE = "'NoneType' object has no attribute 'evaluate'"
 
+#: Constraint types representing a hard, user-specified requirement - not a
+#: "nice to avoid if possible" hotspot/enzyme-avoidance pattern - that the
+#: retry-and-drop logic below must never itself remove, even when DNAChisel's
+#: solver can't satisfy everything at once. EnforceTranslation isn't listed
+#: here: confirmed directly against DNAChisel's own source
+#: (dnachisel.EnforceTranslation.enforced_by_nucleotide_restrictions is True)
+#: that it's enforced by restricting the mutation space itself - only
+#: synonymous edits are ever reachable in the first place - so it can never
+#: actually be named as the failing constraint to begin with, unlike
+#: EnforceGCContent (ordinary post-hoc resolution, confirmed via the same
+#: source check) - the constraint this list was written for. Deliberately NOT
+#: also protected here via the ambiguous-fallback's blanket evaluate() (which
+#: isn't guarded by that same structural restriction, unlike the named-
+#: culprit path): confirmed directly (see the regression this caused in
+#: tests/test_optimize.py's retry-budget-at-scale test) that EnforceTranslation
+#: can transiently evaluate as failing mid-crash-recovery on a densely
+#: conflicting sequence even though the reading frame itself is never actually
+#: at risk there, and treating it as protected in that path forces this loop's
+#: much slower one-at-a-time drop strategy (below) onto an ordinary dense
+#: hotspot-vs-hotspot conflict that doesn't need it - actually reachable, not
+#: just theoretical, and it burns through the retry budget for no benefit.
+_PROTECTED_CONSTRAINT_TYPES = (dnachisel.EnforceGCContent,)
+
+
+def _constraints_to_drop(cnst, problem):
+    """Decide which constraint(s) in `cnst` to drop to make progress on a
+    currently-unresolved `problem`. Returns a (possibly empty) list.
+
+    A constraint that isn't currently failing is never a candidate at all, so
+    a low-risk site that isn't actually part of the present conflict is never
+    touched just because it happens to be the least severe thing in `cnst`.
+
+    If none of the currently-failing constraints is a hard, protected
+    requirement (see _PROTECTED_CONSTRAINT_TYPES) - e.g. several mutually-
+    conflicting hotspot/enzyme-avoidance constraints crashing DNAChisel's
+    solver, none of them a hard requirement - every currently-failing
+    constraint is returned at once, exactly like the original fallback: there
+    is no hard requirement to protect here, so there's no reason to spend one
+    retry-budget round per constraint re-discovering the same failures one at
+    a time (this matters in practice - a single dense/repetitive sequence can
+    have well over 100 such constraints crash/conflict at once).
+
+    If a protected constraint IS among what's currently failing, only the
+    SINGLE least-severe (ascending own risk score - see
+    eso.constraints.convert_df_to_constraints) currently-failing, non-protected
+    constraint is returned - retrying the whole solve after each single
+    removal, so nothing is dropped unless it's still actually part of the
+    conflict once re-evaluated, and the least risky candidate is always tried
+    before a riskier one. An empty list here (no droppable constraint is
+    currently failing alongside the protected one) means a genuine,
+    irreducible conflict: even removing every non-protected constraint can't
+    rescue the protected one.
+    """
+    failing = [
+        c for c in cnst
+        if not c.initialized_on_problem(problem, role='constraint').evaluate(problem).passes
+    ]
+    if not failing:
+        return []
+    protected_failing = [c for c in failing if isinstance(c, _PROTECTED_CONSTRAINT_TYPES)]
+    droppable_failing = [c for c in failing if not isinstance(c, _PROTECTED_CONSTRAINT_TYPES)]
+    if not protected_failing:
+        return droppable_failing
+    if not droppable_failing:
+        return []
+    return [min(droppable_failing, key=lambda c: getattr(c, 'eso_severity', float('inf')))]
+
 
 def _warn_dropped_constraint(constraint):
     warnings.warn(
@@ -301,47 +368,60 @@ def optimization_engine(
             problem.resolve_constraints()
             break
         except NoSolutionError as e:
-            if e.constraint is not None:
-                _warn_dropped_constraint(e.constraint)
-                cnst.remove(e.constraint)
-                flag += 1
-                continue
-            drop_and_retry = True
+            named_culprit = e.constraint
         except AttributeError as e:
             # See _LOCALIZED_NONE_CRASH_MESSAGE above: a genuine DNAChisel-internal
             # crash on non-codon-aligned AvoidPattern locations. Only swallow this
             # exact crash - anything else with this type is a real bug, re-raise it.
             if _LOCALIZED_NONE_CRASH_MESSAGE not in str(e):
                 raise
-            drop_and_retry = True
+            named_culprit = None
 
-        if drop_and_retry:
-            # Either DNAChisel's own final consistency check
-            # (perform_final_constraints_check, run at the end of
-            # resolve_constraints) failed without identifying a single culprit
-            # constraint - NoSolutionError.constraint defaults to None, seen in
-            # practice with several individually-resolvable but densely packed
-            # AvoidPattern constraints that regress each other by the time
-            # solving reaches the last one - or resolve_constraint itself
-            # crashed on a non-codon-aligned AvoidPattern location. Either way,
-            # `cnst.remove(None)` isn't possible here, so instead re-evaluate
-            # every constraint ourselves and drop whichever ones are still
-            # actually failing, so the retry loop can keep making progress the
-            # same way it does for the normal case. Constraints like
-            # EnforceGCContent have location=None until
-            # initialized_on_problem() fills it in (as a copy, not in-place) -
-            # evaluate that initialized copy, not the raw constraint, which
-            # would crash the same way on its own unset location.
-            failing = [
-                c for c in cnst
-                if not c.initialized_on_problem(problem, role='constraint').evaluate(problem).passes
-            ]
-            if not failing:
-                raise
-            for constraint in failing:
-                _warn_dropped_constraint(constraint)
-                cnst.remove(constraint)
+        # The common, cheap case: DNAChisel itself named exactly one failing,
+        # droppable (not hard/protected) constraint - just drop that one, no
+        # need to re-evaluate everything else ourselves.
+        if named_culprit is not None and not isinstance(named_culprit, _PROTECTED_CONSTRAINT_TYPES):
+            _warn_dropped_constraint(named_culprit)
+            cnst.remove(named_culprit)
             flag += 1
+            continue
+
+        # Either DNAChisel named a *protected* hard constraint (most commonly
+        # EnforceGCContent) as the one it couldn't satisfy, or its failure was
+        # ambiguous (perform_final_constraints_check failed with no single
+        # culprit - NoSolutionError.constraint defaults to None - or the
+        # localized-None crash above). Either way, re-evaluate every
+        # constraint ourselves and let _constraints_to_drop decide what to
+        # remove: if a protected constraint isn't actually in conflict here,
+        # this is the same batch-drop-everything-failing behavior as before
+        # (cheap, and fine - none of what's failing is a hard requirement);
+        # if one is, only the single least-severe non-protected constraint
+        # still actually failing is removed per round, so nothing gets
+        # dropped unless it's still part of the conflict once re-evaluated.
+        # An empty result means a genuine, irreducible conflict: a hard,
+        # user-specified requirement (currently just GC content) can't be
+        # satisfied together with the sequence's other hard requirements even
+        # after dropping everything else - eso will not silently drop it and
+        # ship a sequence outside the range requested.
+        # Constraints like EnforceGCContent have location=None until
+        # initialized_on_problem() fills it in (as a copy, not in-place) -
+        # evaluate that initialized copy, not the raw constraint, which would
+        # crash the same way on its own unset location.
+        to_drop = _constraints_to_drop(cnst, problem)
+        if not to_drop:
+            raise NoSolutionError(
+                "Could not satisfy EnforceGCContent together with the sequence's other requested "
+                "constraints, and there was no other, less-critical constraint (hotspot avoidance, "
+                "restriction-enzyme sites, etc.) left to drop instead that would have helped. Unlike "
+                "those, this is a hard, user-specified requirement - eso will not silently drop it "
+                "and ship a sequence outside the range you asked for. Try widening mini_gc/maxi_gc, "
+                "or relaxing whichever other constraint this one is actually in conflict with.",
+                problem=None,
+            )
+        for constraint in to_drop:
+            _warn_dropped_constraint(constraint)
+            cnst.remove(constraint)
+        flag += 1
     else:
         raise NoSolutionError(
             f"More than {retry_budget} hard constraints were not satisfied ({flag}).", problem=problem)

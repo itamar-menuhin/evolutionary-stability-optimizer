@@ -111,6 +111,13 @@ def recombination_to_multiple_avoidance_sites(df, exclusion_regions):
     this was whatever order `sorted(set(...))` happened to produce (plain
     tuple order, unrelated to risk), an accident of construction rather than
     a deliberate "protect the worst sites first" policy.
+
+    The returned dataframe also carries a `severity` column (each site's own
+    `log10_prob_recombination_ecoli`) - not just used for the ordering above,
+    but threaded through by `convert_df_to_constraints` onto the constraint
+    objects themselves, so optimize.py's retry loop can later decide *which*
+    currently-conflicting constraint to drop by its actual risk score, not
+    just by construction order.
     """
     df_copy = df[['start_1', 'end_1', 'sequence_1', 'start_2', 'end_2', 'sequence_2']].copy()
     # optional: callers without a risk score (e.g. hand-built test input) all
@@ -140,7 +147,8 @@ def recombination_to_multiple_avoidance_sites(df, exclusion_regions):
             risk_by_site.setdefault(site, row.log10_prob_recombination_ecoli)
 
     recombination_sites = sorted(set(recombination_sites), key=lambda site: -risk_by_site[site])
-    return pd.DataFrame.from_records(data=recombination_sites, columns=['start', 'end', 'sequence'])
+    records = [(start, end, sequence, risk_by_site[(start, end, sequence)]) for start, end, sequence in recombination_sites]
+    return pd.DataFrame.from_records(data=records, columns=['start', 'end', 'sequence', 'severity'])
 
 
 def exclusion_site_correcter(df, exclusion_regions):
@@ -189,14 +197,33 @@ def exclusion_site_correcter(df, exclusion_regions):
 
 
 def convert_df_to_constraints(df):
-    """Convert a {sequence, start, end} dataframe of patterns-to-avoid into
-    DNAChisel AvoidPattern constraints.
+    """Convert a {sequence, start, end[, severity]} dataframe of patterns-to-avoid
+    into DNAChisel AvoidPattern constraints.
+
+    When a `severity` column is present (each site's own risk score - see
+    recombination_to_multiple_avoidance_sites/modify_df_slippage - lower means
+    less risky), it's attached to the returned constraint as `.eso_severity`.
+    optimize.py's retry loop reads this to decide, ascending, which currently-
+    conflicting constraint to drop first if not everything can be satisfied at
+    once. Constraints built without a severity score (no risk model exists for
+    that site type, e.g. restriction enzymes or methylation motifs) don't get
+    the attribute at all - callers treat a missing `.eso_severity` as maximally
+    severe (`getattr(c, 'eso_severity', float('inf'))`), so those are only
+    ever reached for once every risk-scored candidate has already been tried.
     """
     if df.shape[0] == 0:
         return []
 
-    df = df[['sequence', 'start', 'end']].drop_duplicates()
-    return [
-        dnachisel.AvoidPattern(df.loc[idx, 'sequence'], location=(int(df.loc[idx, 'start']), int(df.loc[idx, 'end'])))
-        for idx in df.index
-    ]
+    has_severity = 'severity' in df.columns
+    identity_cols = ['sequence', 'start', 'end']
+    df = df[identity_cols + (['severity'] if has_severity else [])].drop_duplicates(subset=identity_cols)
+
+    constraints = []
+    for idx in df.index:
+        constraint = dnachisel.AvoidPattern(
+            df.loc[idx, 'sequence'], location=(int(df.loc[idx, 'start']), int(df.loc[idx, 'end']))
+        )
+        if has_severity:
+            constraint.eso_severity = float(df.loc[idx, 'severity'])
+        constraints.append(constraint)
+    return constraints

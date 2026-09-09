@@ -439,14 +439,21 @@ def modify_df_slippage(df_slippage):
     if 'log10_prob_slippage_ecoli' in df_slippage.columns:
         df_slippage = df_slippage.sort_values('log10_prob_slippage_ecoli', ascending=False)
 
+    has_severity = 'log10_prob_slippage_ecoli' in df_slippage.columns
     for idx in df_slippage.index:
         num_base_units = df_slippage.loc[idx].num_base_units
         length = df_slippage.loc[idx].length_base_unit
         for i in range(0, (num_base_units - 1), 2):
-            df_list.append({
+            row = {
                 'sequence': df_slippage.loc[idx].sequence[int(i * length):int((i + 1) * length)],
                 'start': int(df_slippage.loc[idx].start + i * length),
                 'end': int(df_slippage.loc[idx].start + (i + 1) * length),
-            })
+            }
+            # each sub-site inherits its parent slippage site's own risk score -
+            # see convert_df_to_constraints, which threads this through onto the
+            # constraint object itself for optimize.py's retry loop to read.
+            if has_severity:
+                row['severity'] = df_slippage.loc[idx].log10_prob_slippage_ecoli
+            df_list.append(row)
 
     return pd.DataFrame(df_list)
