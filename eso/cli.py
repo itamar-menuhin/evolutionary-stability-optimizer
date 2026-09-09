@@ -6,9 +6,17 @@ import sys
 
 import numpy as np
 
+from eso.codon_usage import (
+    CustomCodonTableFileError,
+    derive_table_from_genome,
+    detect_genetic_code_num_from_gff,
+    load_custom_codon_table_from_file,
+)
 from eso.custom_score import CustomScoreFileError, load_custom_score_from_file
 from eso.io_utils import IndexesFileError, load_indexes_from_file
+from eso.ncbi_genome import GenomeFetchError, fetch_genome_package
 from eso.pipeline import main as run_pipeline
+from eso.tai import build_tai_score_fn, derive_tai_weights_from_gff
 
 
 def build_parser():
@@ -38,6 +46,27 @@ def build_parser():
                         help="Host organism for codon optimization (species name, TaxID, or a custom table name "
                              "e.g. kompas/human_antibody_heavy_chain/human_antibody_light_chain). Ignored if "
                              "--custom-score-file is given.")
+    parser.add_argument('--codon-usage-table-file', default=None,
+                        help="Path to a CSV file (columns: codon, aa, freq_within_aa) giving your own "
+                             "codon-usage table, instead of --organism-name - useful for a "
+                             "project-specific table (e.g. one derived from a specific expression "
+                             "dataset) that isn't a named species. Takes precedence over "
+                             "--organism-name; overridden itself by --custom-score-file.")
+    parser.add_argument('--derive-codon-usage-table-from-assembly', default=None,
+                        help="An NCBI RefSeq/GenBank assembly accession (e.g. GCF_000005845.2) - "
+                             "fetches that organism's genome and derives a real, organism-specific "
+                             "codon-usage table from its own highly-expressed genes (see "
+                             "eso.codon_usage.derive_table_from_genome), instead of --organism-name "
+                             "or --codon-usage-table-file. Requires network access. Mutually "
+                             "exclusive with --codon-usage-table-file.")
+    parser.add_argument('--derive-tai-score-from-assembly', default=None,
+                        help="An NCBI RefSeq/GenBank assembly accession - fetches that organism's "
+                             "genome and scores sequences by real tRNA Adaptation Index (tAI) "
+                             "instead of codon-usage-table CAI (see eso.tai). Requires "
+                             "--tai-kingdom. Requires network access. Mutually exclusive with "
+                             "--custom-score-file.")
+    parser.add_argument('--tai-kingdom', default=None, choices=['prokaryote', 'eukaryote'],
+                        help="Required with --derive-tai-score-from-assembly - see eso.tai.derive_tai_weights_from_gff.")
     parser.add_argument('--custom-score-file', default=None,
                         help="Path to a Python file scoring sequences your own way, instead of CAI/tAI - see "
                              "examples/custom_score_template.py for a copyable starting point. Overrides "
@@ -98,12 +127,52 @@ def main(argv=None):
     common_motifs = [name.strip() for name in args.common_motifs.split(',')] if args.common_motifs else None
     avoid_enzymes = [name.strip() for name in args.avoid_enzymes.split(',')] if args.avoid_enzymes else ()
 
+    if args.codon_usage_table_file is not None and args.derive_codon_usage_table_from_assembly is not None:
+        print("--codon-usage-table-file and --derive-codon-usage-table-from-assembly can't both be "
+              "given - pick one.", file=sys.stderr)
+        return 1
+    if args.custom_score_file is not None and args.derive_tai_score_from_assembly is not None:
+        print("--custom-score-file and --derive-tai-score-from-assembly can't both be given - pick one.",
+              file=sys.stderr)
+        return 1
+    if args.derive_tai_score_from_assembly is not None and args.tai_kingdom is None:
+        print("--derive-tai-score-from-assembly requires --tai-kingdom (prokaryote or eukaryote).",
+              file=sys.stderr)
+        return 1
+
+    codon_usage_table = None
+    if args.codon_usage_table_file is not None:
+        try:
+            codon_usage_table = load_custom_codon_table_from_file(args.codon_usage_table_file)
+        except CustomCodonTableFileError as e:
+            print(str(e), file=sys.stderr)
+            return 1
+    if args.derive_codon_usage_table_from_assembly is not None:
+        try:
+            package = fetch_genome_package(args.derive_codon_usage_table_from_assembly)
+            genetic_code_num = detect_genetic_code_num_from_gff(package.gff_path)
+            codon_usage_table = derive_table_from_genome(package.cds_fasta_path, genetic_code_num)
+        except (GenomeFetchError, CustomCodonTableFileError) as e:
+            print(str(e), file=sys.stderr)
+            return 1
+
     custom_score_fn = None
     if args.custom_score_file is not None:
         try:
             custom_score_fn = load_custom_score_from_file(
                 args.custom_score_file, function_name=args.custom_score_function)
         except CustomScoreFileError as e:
+            print(str(e), file=sys.stderr)
+            return 1
+    if args.derive_tai_score_from_assembly is not None:
+        try:
+            package = fetch_genome_package(args.derive_tai_score_from_assembly)
+            genetic_code_num = detect_genetic_code_num_from_gff(package.gff_path)
+            tai_weights = derive_tai_weights_from_gff(
+                package.gff_path, kingdom=args.tai_kingdom, genetic_code_num=genetic_code_num,
+                genome_fasta_path=package.genome_fasta_path)
+            custom_score_fn = build_tai_score_fn(tai_weights)
+        except (GenomeFetchError, CustomCodonTableFileError, ValueError) as e:
             print(str(e), file=sys.stderr)
             return 1
 
@@ -127,6 +196,7 @@ def main(argv=None):
         maxi_gc=args.maxi_gc,
         method=args.method,
         organism_name=args.organism_name,
+        codon_usage_table=codon_usage_table,
         indexes=indexes,
         recombination_mode=args.recombination_mode,
         slippage_mode=args.slippage_mode,

@@ -65,14 +65,21 @@ def _warn_dropped_constraint(constraint):
 NOT_SPECIFIED = 'not_specified'
 
 
-def _codon_optimization_objectives(organism_name, orf_regions, method):
+def _codon_optimization_objectives(organism_name, orf_regions, method, codon_usage_table=None):
     """Build DNAChisel CodonOptimize objectives.
 
     `organism_name` may be one of eso.codon_usage.CODON_USAGE_TABLES' custom
     tables (not present in the Kazusa database), NOT_SPECIFIED to skip codon
     optimization entirely, or any species/TaxID supported by
-    python-codon-tables.
+    python-codon-tables. Ignored entirely if `codon_usage_table` is given -
+    see optimization_engine's docstring.
     """
+    if codon_usage_table is not None:
+        return [
+            dnachisel.CodonOptimize(location=orf, codon_usage_table=codon_usage_table.copy(), method=method)
+            for orf in orf_regions
+        ]
+
     if organism_name == NOT_SPECIFIED:
         return []
 
@@ -109,6 +116,7 @@ def optimization_engine(
     window_size_gc=50,
     method='use_best_codon',
     organism_name='not_specified',
+    codon_usage_table=None,
     custom_score_fn=None,
     custom_score_minimize=False,
     df_recombination=None,
@@ -141,11 +149,22 @@ def optimization_engine(
         Host organism for codon optimization: one of
         eso.codon_usage.CODON_USAGE_TABLES' keys, a python-codon-tables
         species name/TaxID, or "not_specified" to skip codon optimization.
+        Ignored if `codon_usage_table` is given.
+    codon_usage_table: dict, or None
+        A codon-usage table of the form {'*': {'TAA': 0.33, ...}, 'K': {...},
+        ...} - see eso.codon_usage.load_custom_codon_table_from_file for
+        loading one from a CSV file (most users should use the
+        `--codon-usage-table-file` CLI flag / that function instead of
+        building this dict by hand). If given, this is used directly for
+        codon-usage optimization instead of `organism_name` (both
+        eso.codon_usage.CODON_USAGE_TABLES lookups and python-codon-tables
+        species lookups are skipped entirely). Ignored if custom_score_fn is
+        also given, same as `organism_name`.
     custom_score_fn: callable(str) -> float, or None
         If given, replaces the CodonOptimize (CAI/tAI-style) objective with
         eso.custom_score.CustomScore wrapping this function (higher is
-        better sequence, unless custom_score_minimize=True). `organism_name`
-        and `method` are then ignored. Called once per ORF, on the whole ORF,
+        better sequence, unless custom_score_minimize=True). `organism_name`,
+        `codon_usage_table`, and `method` are then ignored. Called once per ORF, on the whole ORF,
         for every trial mutation during optimization - can be slow on long
         sequences or an expensive custom_score_fn (a warning is raised).
     custom_score_minimize: bool
@@ -209,7 +228,7 @@ def optimization_engine(
             for orf in orf_regions
         ]
     else:
-        obj = _codon_optimization_objectives(organism_name, orf_regions, method)
+        obj = _codon_optimization_objectives(organism_name, orf_regions, method, codon_usage_table=codon_usage_table)
 
     cnst = [dnachisel.EnforceGCContent(mini=mini_gc, maxi=maxi_gc, window=window_size_gc)]
     for orf in orf_regions:

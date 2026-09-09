@@ -86,7 +86,7 @@ def reoptimize_until_stable(
         recombination_mode, slippage_mode, mini_gc, maxi_gc, method, organism_name,
         custom_score_fn, custom_score_minimize, orf_regions=(), exclusion_regions=(),
         avoid_hairpins=False, hairpin_stem_size=20, hairpin_window=200, avoid_enzymes=(),
-        max_rounds=5, on_round_start=None):
+        max_rounds=5, on_round_start=None, codon_usage_table=None):
     """Repeatedly detects hotspots in `curr_seq` and re-optimizes to avoid
     them, continuing for as long as each fresh detection pass still finds
     something.
@@ -106,6 +106,10 @@ def reoptimize_until_stable(
     each detection pass, before that round's re-optimization - lets a caller
     report live progress (e.g. eso_desktop's status screen) without this
     function knowing anything about how progress is displayed.
+
+    `codon_usage_table`, if given, is passed straight through to
+    optimization_engine (see its docstring) - takes precedence over
+    `organism_name`, ignored if `custom_score_fn` is given.
 
     Returns (final_sequence, obj_description, total_num_edits,
     cumulative_sites, rounds_used):
@@ -153,6 +157,7 @@ def reoptimize_until_stable(
         curr_seq, obj_description, num_edits = optimization_engine(
             curr_seq, df_recombination=sites['df_recombination_raw'], df_slippage=sites['df_slippage_raw'],
             df_motifs=df_motifs, mini_gc=mini_gc, maxi_gc=maxi_gc, method=method, organism_name=organism_name,
+            codon_usage_table=codon_usage_table,
             custom_score_fn=custom_score_fn, custom_score_minimize=custom_score_minimize,
             orf_regions=orf_regions, exclusion_regions=exclusion_regions,
             avoid_hairpins=avoid_hairpins, hairpin_stem_size=hairpin_stem_size,
@@ -191,7 +196,8 @@ def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
             optimize, mini_gc, maxi_gc, method, organism_name, indexes,
             recombination_mode='thorough', slippage_mode='default', common_motifs=None,
             custom_score_fn=None, custom_score_minimize=False,
-            avoid_hairpins=False, hairpin_stem_size=20, hairpin_window=200, avoid_enzymes=()):
+            avoid_hairpins=False, hairpin_stem_size=20, hairpin_window=200, avoid_enzymes=(),
+            codon_usage_table=None):
     """Run the two-pass optimization (CAI/GC only, then + hotspot avoidance) over
     every sequence record in `data`, and write out CSVs + a Word report to
     `output_path/<file_stem>/`.
@@ -228,6 +234,7 @@ def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
         if optimize:
             curr_seq, obj_description, _ = optimization_engine(
                 curr_seq, mini_gc=mini_gc, maxi_gc=maxi_gc, method=method, organism_name=organism_name,
+                codon_usage_table=codon_usage_table,
                 custom_score_fn=custom_score_fn,
                 custom_score_minimize=custom_score_minimize,
                 orf_regions=orf_regions, exclusion_regions=exclusion_regions,
@@ -246,7 +253,8 @@ def backend(data, file, output_path, compute_motifs, num_sites, motifs_path,
                 recombination_mode, slippage_mode, mini_gc, maxi_gc, method, organism_name,
                 custom_score_fn, custom_score_minimize, orf_regions, exclusion_regions,
                 avoid_hairpins=avoid_hairpins, hairpin_stem_size=hairpin_stem_size,
-                hairpin_window=hairpin_window, avoid_enzymes=avoid_enzymes)
+                hairpin_window=hairpin_window, avoid_enzymes=avoid_enzymes,
+                codon_usage_table=codon_usage_table)
         else:
             cumulative_sites = suspect_site_extractor(
                 curr_seq, compute_motifs, num_sites, motifs_path, common_motifs=common_motifs,
@@ -355,7 +363,7 @@ def main(input_folder=None, output_path=None, compute_motifs=False, num_sites=np
          method='use_best_codon', organism_name='not_specified', indexes=None,
          recombination_mode='thorough', slippage_mode='default', custom_score_fn=None,
          custom_score_minimize=False, avoid_hairpins=False, hairpin_stem_size=20,
-         hairpin_window=200, avoid_enzymes=()):
+         hairpin_window=200, avoid_enzymes=(), codon_usage_table=None):
     """Optimize every FASTA/GenBank file in `input_folder`, writing per-file CSVs
     of detected hotspots and the optimized sequence into `output_path`.
 
@@ -391,6 +399,12 @@ def main(input_folder=None, output_path=None, compute_motifs=False, num_sites=np
         Codon optimization strategy.
     organism_name: str
         Host organism for codon optimization (see eso.optimize._codon_optimization_objectives).
+        Ignored if `codon_usage_table` is given.
+    codon_usage_table: dict, or None
+        See eso.optimize.optimization_engine; most users should use the
+        `--codon-usage-table-file` CLI flag /
+        eso.codon_usage.load_custom_codon_table_from_file instead of
+        building this dict directly. Takes precedence over `organism_name`.
     indexes: dict
         Maps (file_stem, seq_index_str) -> (orf_region_string, exclusion_region_string),
         1-indexed and inclusive, e.g. {("my_gene", "0"): ("1-6, 51-68", "1-6, 50-68")}.
@@ -445,7 +459,7 @@ def main(input_folder=None, output_path=None, compute_motifs=False, num_sites=np
             slippage_mode=slippage_mode, common_motifs=common_motifs, custom_score_fn=custom_score_fn,
             custom_score_minimize=custom_score_minimize, avoid_hairpins=avoid_hairpins,
             hairpin_stem_size=hairpin_stem_size, hairpin_window=hairpin_window,
-            avoid_enzymes=avoid_enzymes)
+            avoid_enzymes=avoid_enzymes, codon_usage_table=codon_usage_table)
         final_results.extend((file, seq_index, seq) for seq_index, seq in curr_results)
 
     return message, final_results

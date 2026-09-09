@@ -129,6 +129,45 @@ def test_not_specified_organism_skips_codon_optimization_silently():
     assert len(final_seq) == len(seq)
 
 
+def test_codon_usage_table_takes_precedence_over_organism_name():
+    from eso.codon_usage import cub_c1
+
+    table = cub_c1()
+    # Force a single, deterministic "best" codon for Leucine - everything
+    # else in this table is a real, working table (cub_c1), so this only
+    # tests that the explicit table (not organism_name="kompas", a
+    # deliberately different table) is what actually gets used.
+    table['L'] = {'CTA': 0.0, 'CTC': 0.0, 'CTG': 1.0, 'CTT': 0.0, 'TTA': 0.0, 'TTG': 0.0}
+    seq = "ATG" + "TTA" * 5 + "TAA"
+
+    final_seq, _, num_edits = optimization_engine(seq, organism_name="kompas", codon_usage_table=table)
+
+    # Translation preserved (EnforceTranslation) - not asserting the exact
+    # stop codon, since 'use_best_codon' optimizes that position too, and
+    # cub_c1's own real stop-codon frequencies (unmodified by this test)
+    # may legitimately prefer a different stop codon than the original.
+    from Bio.Seq import Seq
+    assert str(Seq(final_seq).translate()) == str(Seq(seq).translate())
+    leu_codons = [final_seq[i:i + 3] for i in range(3, len(final_seq) - 3, 3)]
+    assert all(codon == "CTG" for codon in leu_codons)
+    assert num_edits > 0
+
+
+def test_codon_usage_table_is_ignored_when_custom_score_fn_is_given():
+    # A deliberately broken table (missing Met/stop entries entirely) would
+    # crash immediately if it were actually used to score the sequence -
+    # completing successfully is itself the proof that custom_score_fn took
+    # precedence and codon_usage_table was ignored, matching organism_name's
+    # own documented precedence rule.
+    broken_table = {'A': {'GCT': 1.0}}
+    seq = "ATG" + "TTA" * 5 + "TAA"
+
+    final_seq, _, _ = optimization_engine(
+        seq, codon_usage_table=broken_table, custom_score_fn=lambda s: s.count("G"))
+
+    assert len(final_seq) == len(seq)
+
+
 def test_recombination_avoidance_breaks_the_near_duplicate_pair():
     site = "ACGTGGCATTAGCTAGCCTA"
     spacer = "TTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"

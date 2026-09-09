@@ -352,6 +352,40 @@ unrelated quantity, with no reliable way to detect this automatically). See
 `docs/detector-comparisons.md` for the full investigation, including an initial benchmark
 that was itself flawed and had to be corrected before the removal decision was made.
 
+## Using your own codon-usage table
+
+`organism_name` covers named species (via `python-codon-tables`) and this library's own
+bundled tables (`eso.codon_usage.CODON_USAGE_TABLES`), but sometimes neither fits - a
+project-specific table derived from a particular expression dataset, for instance. Pass
+`codon_usage_table=...` instead of `organism_name` to `optimization_engine`/`eso.pipeline.main`,
+or `--codon-usage-table-file` on the CLI:
+
+```bash
+eso-optimize --input-folder path/to/fasta_files --codon-usage-table-file my_table.csv
+```
+
+The CSV needs (at least) three columns - `codon`, `aa` (one-letter amino acid code, `*` for
+stop), `freq_within_aa` (that codon's relative usage among synonymous codons for that amino
+acid - need not sum to exactly 1, DNAChisel normalizes internally) - the same shape this
+library's own bundled CSV-backed tables use. A missing stop-codon row falls back to an even
+default rather than failing. `--codon-usage-table-file` overrides `--organism-name`, and is
+itself overridden by `--custom-score-file`.
+
+From Python, either build the dict directly or reuse the same file-loading + validation the
+CLI uses via `eso.codon_usage.load_custom_codon_table_from_file`:
+
+```python
+from eso.codon_usage import load_custom_codon_table_from_file
+from eso.optimize import optimization_engine
+
+codon_usage_table = load_custom_codon_table_from_file("my_table.csv")  # same validation as the CLI
+final_seq, _, _ = optimization_engine(seq, codon_usage_table=codon_usage_table)
+```
+
+A malformed file (missing columns, a codon filed under the wrong amino acid, a non-numeric
+frequency) fails immediately with a plain-English message, before any optimization runs -
+mirroring `--custom-score-file`'s own validation philosophy.
+
 ## Restricting ORF and exclusion regions per sequence
 
 By default, the entire sequence is treated as one in-frame, translation-preserving ORF

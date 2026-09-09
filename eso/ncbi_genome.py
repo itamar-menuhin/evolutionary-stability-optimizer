@@ -1,0 +1,151 @@
+"""Fetch a single organism's genome package (CDS FASTA + GFF3 annotation)
+directly from NCBI's Datasets API, given its RefSeq/GenBank assembly
+accession.
+
+This is the network-I/O layer only - see eso.codon_usage.derive_table_from_genome
+and eso.tai.derive_tai_weights_from_gff for what to do with the files this
+returns. Download cost is negligible in practice (measured: 1.2-9MB,
+1.5-8.7s for three real test organisms spanning bacteria/eukaryote/archaea),
+so this is meant to be called directly, not cached/bundled ahead of time.
+
+Mirrors the exact download approach already used and proven in
+`prepare_ecoli_host_reference_data.py` (a sibling project's real,
+already-working NCBI-fetch code) - stdlib-only (urllib + zipfile), no new
+dependency.
+"""
+
+import urllib.error
+import urllib.request
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path
+from tempfile import mkdtemp
+
+_CHUNK_SIZE = 1024 * 1024
+_NCBI_DOWNLOAD_URL_TEMPLATE = (
+    "https://api.ncbi.nlm.nih.gov/datasets/v2/genome/accession/{accession}"
+    "/download?include_annotation_type=GENOME_FASTA,GENOME_GFF,CDS_FASTA"
+)
+
+
+class GenomeFetchError(Exception):
+    """Fetching or unpacking an NCBI genome package failed.
+
+    Raised with a plain-English message - the most common real causes are a
+    typo'd/withdrawn assembly accession or a network problem, neither of
+    which should require reading a traceback through this module to
+    diagnose.
+    """
+
+
+@dataclass(frozen=True)
+class GenomePackage:
+    """Paths to the files this module's callers actually need, inside the
+    extracted NCBI genome package. `genome_fasta_path` (the whole-genome
+    sequence, not just CDS regions) is needed by eso.tai.derive_tai_weights_from_gff
+    for tRNA annotations that only give an anticodon's genomic position
+    (`anticodon=(pos:...)`, common in tRNAscan-SE-sourced annotations) rather
+    than embedding the anticodon triplet directly in the feature's own
+    attributes (as RefSeq's own curated E. coli annotation does) - confirmed
+    this session that both styles occur in real NCBI packages, not just one."""
+
+    cds_fasta_path: str
+    gff_path: str
+    genome_fasta_path: str
+
+
+def _download(url, dest):
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".part")
+    try:
+        with urllib.request.urlopen(url, timeout=120) as response, open(tmp, "wb") as handle:
+            while True:
+                chunk = response.read(_CHUNK_SIZE)
+                if not chunk:
+                    break
+                handle.write(chunk)
+    except (urllib.error.URLError, TimeoutError) as exc:
+        tmp.unlink(missing_ok=True)
+        raise GenomeFetchError(
+            f"Could not fetch the NCBI genome package from {url!r}. This is usually either "
+            f"a network problem, or '{url.rsplit('/accession/', 1)[-1].split('/download')[0]}' "
+            f"isn't a real/current NCBI assembly accession - check it at "
+            f"https://www.ncbi.nlm.nih.gov/datasets/genome. The underlying error was: {exc!r}."
+        ) from exc
+    tmp.replace(dest)
+
+
+def fetch_genome_package(assembly_accession, dest_dir=None):
+    """Download and extract one organism's genome package from NCBI.
+
+    `assembly_accession` is an explicit RefSeq/GenBank accession, e.g.
+    `"GCF_000005845.2"` (E. coli K-12 MG1655) - find one for your organism
+    at https://www.ncbi.nlm.nih.gov/datasets/genome, or reuse one you
+    already know. This does NOT resolve a bare species name or TaxID to its
+    official assembly on its own - that's a separate, not-yet-built feature.
+
+    `dest_dir`: where to download/extract into (default: a fresh temp
+    directory). The returned paths live under here - if you pass your own
+    `dest_dir`, you're responsible for cleaning it up afterward.
+
+    Returns
+    -------
+    GenomePackage
+
+    Raises
+    ------
+    GenomeFetchError
+        On a bad accession, a network failure, or a package that doesn't
+        contain what was requested (e.g. an assembly with no CDS annotation).
+    """
+    work_dir = Path(dest_dir) if dest_dir is not None else Path(mkdtemp(prefix="eso_ncbi_genome_"))
+    zip_path = work_dir / f"{assembly_accession}.zip"
+    url = _NCBI_DOWNLOAD_URL_TEMPLATE.format(accession=assembly_accession)
+
+    _download(url, zip_path)
+
+    extract_dir = work_dir / "extracted"
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            archive.extractall(extract_dir)
+    except zipfile.BadZipFile as exc:
+        raise GenomeFetchError(
+            f"NCBI returned something that isn't a valid genome-package zip file for "
+            f"'{assembly_accession}' - it's likely not a real/current assembly accession. "
+            f"Check it at https://www.ncbi.nlm.nih.gov/datasets/genome."
+        ) from exc
+
+    data_dir = extract_dir / "ncbi_dataset" / "data" / assembly_accession
+    if not data_dir.is_dir():
+        raise GenomeFetchError(
+            f"The downloaded package for '{assembly_accession}' didn't have the expected "
+            f"folder layout (looked for {data_dir}) - NCBI's package format may have changed, "
+            f"or this accession doesn't exist."
+        )
+
+    cds_candidates = list(data_dir.glob("cds_from_genomic.fna"))
+    gff_candidates = list(data_dir.glob("genomic.gff"))
+    # Matched by accession prefix, not just "*_genomic.fna" - that pattern
+    # would also match "cds_from_genomic.fna" itself.
+    genome_candidates = list(data_dir.glob(f"{assembly_accession}_*_genomic.fna"))
+    if not cds_candidates:
+        raise GenomeFetchError(
+            f"'{assembly_accession}' has no CDS FASTA in its NCBI package - this assembly "
+            f"likely has no protein-coding annotation available, so a codon-usage/tAI table "
+            f"can't be derived from it. Try a different (typically RefSeq) accession for the "
+            f"same organism at https://www.ncbi.nlm.nih.gov/datasets/genome."
+        )
+    if not gff_candidates:
+        raise GenomeFetchError(
+            f"'{assembly_accession}' has no GFF3 annotation in its NCBI package."
+        )
+    if not genome_candidates:
+        raise GenomeFetchError(
+            f"'{assembly_accession}' has no whole-genome FASTA in its NCBI package."
+        )
+
+    return GenomePackage(
+        cds_fasta_path=str(cds_candidates[0]),
+        gff_path=str(gff_candidates[0]),
+        genome_fasta_path=str(genome_candidates[0]),
+    )
