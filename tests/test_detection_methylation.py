@@ -15,6 +15,7 @@ rewrite picks the lowest motif_number deterministically instead.
 import io
 
 import numpy as np
+import pandas as pd
 import pytest
 from Bio import motifs
 
@@ -142,6 +143,25 @@ def test_motif_longer_than_sequence_is_skipped_not_crashed():
     long_motif = _parse_meme([[0.7, 0.1, 0.1, 0.1]] * 20, name="long")
     df = find_motif_sites("ACGT", np.inf, [long_motif])
     assert df.empty
+
+
+def test_num_sites_zero_matches_the_other_empty_paths_dtypes():
+    # Regression test for a real dtype inconsistency: truncating to
+    # num_sites=0 used to build the (empty) result from empty Python lists,
+    # leaving matching_motif/actual_site/actual_site_reverse_conjugate as
+    # float64 rather than the object/str dtype every other empty result (no
+    # motifs given, no site scoring above 0) has. Confirmed directly before
+    # this fix - pd.concat across a real run's per-record results could mix
+    # dtypes for this column depending on whether any given record happened
+    # to hit this exact path.
+    motif = _parse_meme(_ACGT_MOTIF_ROWS)
+    seq = "ACGT" * 5
+
+    df_no_matches = find_motif_sites("TTTT", np.inf, [motif])
+    df_num_sites_zero = find_motif_sites(seq, 0, [motif])
+
+    assert df_num_sites_zero.empty
+    pd.testing.assert_series_equal(df_num_sites_zero.dtypes, df_no_matches.dtypes)
 
 
 def test_tie_between_distinct_motifs_resolves_to_lower_motif_number():

@@ -78,6 +78,18 @@ def find_motif_sites(seq, num_sites, relevant_motifs):
     if num_sites < order.size:
         order = order[:int(num_sites)]
 
+    if order.size == 0:
+        # Confirmed real (if narrow - only reachable via an explicit
+        # num_sites=0) dtype inconsistency: building the result below from
+        # empty Python lists (`[motif_names[m] for m in ...]` etc. over an
+        # empty `order`) leaves matching_motif/actual_site/
+        # actual_site_reverse_conjugate as float64, not the object/str dtype
+        # every non-empty result - and the OTHER empty-result path just above
+        # (no site scored above 0 at all) - both have. Returning the same
+        # canonical empty frame here keeps every empty result consistent,
+        # regardless of which of the two empty paths produced it.
+        return pd.DataFrame(columns=SITE_COLUMNS)
+
     start_indices = start_indices[order]
     end_indices = end_indices[order]
     winning_scores = winning_scores[order]
