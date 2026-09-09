@@ -69,6 +69,21 @@ def test_common_motifs_flag_parses_to_a_list(monkeypatch):
     assert captured['common_motifs'] == ['dam', 'dcm']
 
 
+def test_compute_motifs_without_a_source_fails_fast(capsys):
+    # Regression test for a real, previously-silent gap: --common-motifs'
+    # own help text already documented "At least one of --motifs-path/
+    # --common-motifs is required with --compute-motifs", but nothing
+    # actually enforced it - eso.pipeline silently built an empty
+    # relevant_motifs list and reported zero motif hits with no error at
+    # all, printing "Success!" and writing an empty motif_sites.csv exactly
+    # as if a real scan had simply found nothing. Confirmed directly before
+    # this fix (real CLI call, not mocked).
+    exit_code = cli.main(['--compute-motifs'])
+
+    assert exit_code == 1
+    assert "requires at least one of --motifs-path/--common-motifs" in capsys.readouterr().err
+
+
 def test_no_common_motifs_flag_leaves_it_none(monkeypatch):
     captured = {}
 

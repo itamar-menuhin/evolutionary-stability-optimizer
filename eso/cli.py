@@ -3,6 +3,7 @@
 import argparse
 import logging
 import sys
+import warnings
 
 import numpy as np
 
@@ -156,6 +157,18 @@ def main(argv=None):
         print("--derive-tai-score-from-assembly requires --tai-kingdom (prokaryote or eukaryote).",
               file=sys.stderr)
         return 1
+    # Confirmed real, previously-silent gap: --common-motifs' own help text
+    # already documented this requirement ("At least one of --motifs-path/
+    # --common-motifs is required with --compute-motifs"), but nothing
+    # actually enforced it - eso.pipeline.suspect_site_extractor silently
+    # builds an empty relevant_motifs list and reports zero motif hits with
+    # no error or warning at all when both are omitted, printing "Success!"
+    # and writing an empty motif_sites.csv exactly as if a real scan had
+    # simply found nothing - confirmed directly before this fix.
+    if args.compute_motifs and not (args.motifs_path or args.common_motifs):
+        print("--compute-motifs requires at least one of --motifs-path/--common-motifs.",
+              file=sys.stderr)
+        return 1
 
     codon_usage_table = None
     if args.codon_usage_table_file is not None:
@@ -201,6 +214,27 @@ def main(argv=None):
         except (GenomeFetchError, CustomCodonTableFileError, ValueError) as e:
             print(str(e), file=sys.stderr)
             return 1
+
+    # Confirmed real, silent waste: optimization_engine ignores
+    # codon_usage_table entirely whenever custom_score_fn is given (see
+    # eso.optimize._codon_optimization_objectives's own docstring) - a
+    # user deriving BOTH a CAI table (--codon-usage-table-file/
+    # --derive-codon-usage-table-from-assembly) AND a custom score
+    # (--custom-score-file/--derive-tai-score-from-assembly) would have the
+    # former's real network fetch and CPU work (ENc over potentially
+    # thousands of genes) thrown away with no indication at all. A warning,
+    # not a hard error - this is a documented, intentional precedence rule,
+    # not a forbidden combination, so a use case that genuinely wants this
+    # (e.g. scripting both flags generically and letting precedence sort it
+    # out) shouldn't be blocked outright.
+    if codon_usage_table is not None and custom_score_fn is not None:
+        warnings.warn(
+            "Both a codon-usage table (--codon-usage-table-file/"
+            "--derive-codon-usage-table-from-assembly) and a custom score "
+            "(--custom-score-file/--derive-tai-score-from-assembly) were given - the codon-usage "
+            "table will be ignored entirely; only the custom score is used for codon optimization.",
+            stacklevel=2,
+        )
 
     indexes = None
     if args.indexes_file is not None:
