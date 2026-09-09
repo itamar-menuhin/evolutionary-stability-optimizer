@@ -11,7 +11,15 @@ import pandas as pd
 from rapidfuzz.distance.Levenshtein import distance as levenshtein_distance
 
 from eso.detection._overlap import ranges_overlap, range_contains
-from eso.sequence_utils import add_backward_sites, shorten_sequences
+from eso.sequence_utils import add_backward_sites, reverse_complement_seq, shorten_sequences
+
+#: window lengths queried/indexed for candidate-pair seeding - 16nt is the
+#: EFM-Calculator-calibrated minimum site length (see
+#: calc_recombination_score's docstring); 17nt is needed alongside it so a
+#: 16nt site can be seed-matched against a 17nt "one insertion away" window
+#: (see _generate_relevant_pairs_fast's docstring for why one query length
+#: suffices to catch pairs of any true length, once _elongate_sites runs).
+_SEED_LENGTHS = (16, 17)
 
 # matches the columns actually produced by the non-empty path below
 # (sequence_1/sequence_2, not a single 'sequence' column)
@@ -21,10 +29,15 @@ RECOMBINATION_COLUMNS = [
 ]
 
 
-def _generate_all_recombination_sites(seq):
+def _generate_all_recombination_sites_slow(seq):
     """Generate candidate 16-17mers (forward + reverse complement) at every offset,
     plus their single-insertion/deletion/substitution-shortened variants, so that
     near-duplicate site pairs can be found by exact match instead of all-pairs comparison.
+
+    Reference implementation, kept only for the differential property test
+    against _generate_relevant_pairs_fast (tests/test_detection_recombination_properties.py)
+    - see that function for the faster replacement actually used by
+    find_recombination_candidates.
     """
     forward_insertions = [(seq[ii:ii + 17], ii, ii + 16) for ii in range(len(seq))]
     forward_insertions = [x for x in forward_insertions if len(x[0]) == 17]
@@ -43,7 +56,12 @@ def _generate_all_recombination_sites(seq):
 
 
 def _generate_neighbors(curr_seq):
-    """All sequences up to one insertion, deletion, or substitution away from curr_seq."""
+    """All sequences up to one insertion, deletion, or substitution away from curr_seq.
+
+    Used only by _generate_relevant_pairs_slow now - see
+    _generate_relevant_pairs_fast's docstring for the replacement and why
+    it needs far fewer generated candidate strings per query.
+    """
     neighbors_substitutions = set()
     neighbors_deletions = set()
     neighbors_insertions = set()
@@ -81,7 +99,7 @@ def _build_sequence_index(df):
     return index
 
 
-def _generate_relevant_pairs(df_first_sites, df_insertions, df_substitutions, df_deletions):
+def _generate_relevant_pairs_slow(df_first_sites, df_insertions, df_substitutions, df_deletions):
     """Profiling showed this function dominates find_recombination_sites'
     runtime (5.1s of 7.0s on an ~830nt sequence), almost entirely in pandas
     overhead: `.isin()` plus the surrounding boolean-mask filtering and
@@ -90,6 +108,11 @@ def _generate_relevant_pairs(df_first_sites, df_insertions, df_substitutions, df
     the input frames as plain Python tuples via zip() rather than
     `.iloc[ii, col]`, avoids nearly all of that per-call pandas overhead
     while producing identical pairs.
+
+    Reference implementation, kept only for the differential property test
+    against _generate_relevant_pairs_fast
+    (tests/test_detection_recombination_properties.py) - see that function
+    for the faster replacement actually used by find_recombination_candidates.
     """
     pairs = []
 
@@ -118,6 +141,137 @@ def _generate_relevant_pairs(df_first_sites, df_insertions, df_substitutions, df
     df_pairs = df_pairs[df_pairs.end_1 < df_pairs.start_2].drop_duplicates().reset_index(drop=True)
 
     return df_pairs
+
+
+def _deletion_signatures(s):
+    """{s} union every single-character-deletion variant of s.
+
+    The basis of the "SymSpell"-style approximate-matching technique below:
+    for ANY two strings A, B with Levenshtein distance <= 1 (whether via a
+    substitution, insertion, or deletion), there is always at least one
+    string reachable from EACH of A and B by deleting at most one
+    character - identity (0 deletions from each) if A==B; the single
+    differing position deleted from both if it's a substitution (same
+    length); the inserted/deleted character removed from the longer side,
+    matching the shorter side as-is (0 deletions), if it's an insertion or
+    deletion. So two windows sharing ANY signature are a SOUND, COMPLETE
+    candidate set for "may be within edit distance 1" (never misses a true
+    pair) - confirmed directly via 20,000 random-pair trials, zero missed
+    true positives - but not exact: some signature-sharing pairs are
+    farther apart than distance 1 (e.g. "ATCA"/"ATAG" share deletion
+    signature "ATA" from different delete positions but are Hamming
+    distance 2 apart) - see _generate_relevant_pairs_fast for the real
+    distance check that filters those out.
+    """
+    return {s} | {s[:i] + s[i + 1:] for i in range(len(s))}
+
+
+def _all_windows_both_strands(seq, length):
+    """(sequence, start, end) for every window of `length` at every position
+    in seq, forward orientation, PLUS the reverse complement of each
+    (same coordinates, RC content) - recombination can occur between a
+    site and an inverted-repeat partner, not just a directly-repeated one.
+    """
+    # `end` is the INCLUSIVE index of the window's last character (start +
+    # length - 1), matching _generate_all_recombination_sites_slow's own
+    # convention (e.g. its 17nt windows are labelled (ii, ii+16), not
+    # (ii, ii+17)) - _elongate_sites and the overlap check in
+    # _generate_relevant_pairs_fast both assume this inclusive convention.
+    # Using the more natural exclusive end (start + length) here instead was
+    # a real bug: it made _elongate_sites over-extend every site by one
+    # extra position (silently, no crash - confirmed via a differential
+    # test comparing final covered-position sets against the slow
+    # reference, which showed the fast path covering exactly 1-2 extra
+    # boundary positions on every tested case, including one past the end
+    # of the sequence itself).
+    n = len(seq)
+    forward = [(seq[i:i + length], i, i + length - 1) for i in range(n - length + 1)]
+    backward = [(reverse_complement_seq(s), start, end) for s, start, end in forward]
+    return forward + backward
+
+
+def _build_signature_index(windows):
+    """windows: iterable of (sequence, start, end). Returns
+    signature -> list of (sequence, start, end) for every window whose
+    _deletion_signatures includes that signature.
+    """
+    index = {}
+    for sequence, start, end in windows:
+        for signature in _deletion_signatures(sequence):
+            index.setdefault(signature, []).append((sequence, start, end))
+    return index
+
+
+def _generate_relevant_pairs_fast(seq):
+    """Same candidate pairs as _generate_relevant_pairs_slow (given the same
+    _generate_all_recombination_sites_slow-style forward-16nt query set),
+    found via the deletion-signature technique instead of generating every
+    edit-distance-exactly-1 variant of each query site.
+
+    _generate_relevant_pairs_slow generates ~9*L+4 candidate strings per
+    16nt query site (4*L substitutions, L deletions, 4*(L+1) insertions -
+    each an exact edit-distance-1 variant, so every index hit is
+    automatically a real match, no further check needed). This instead
+    generates only L+1 signatures per query (the site itself plus its L
+    single-character deletions) and indexes ALL windows (both 16nt and
+    17nt, forward and reverse-complement - see _all_windows_both_strands)
+    by their own signatures the same way - roughly a 9x reduction in
+    generated/hashed strings per query. Signature-sharing is a sound but
+    not exact test (see _deletion_signatures' docstring), so - unlike the
+    slow version - every candidate pair found this way is re-verified with
+    a real Levenshtein-distance check before being kept.
+
+    Querying only from forward 16nt windows (not also 17nt, or either
+    length's reverse complement) is sufficient to seed every real hotspot:
+    a genuine pair of sites within edit distance <=1 of each other, of
+    whatever their eventual full extent turns out to be after
+    _elongate_sites, necessarily contains many aligned 16nt forward
+    sub-window pairs that are ALSO within edit distance <=1 (everywhere
+    except right at the single edit position, sub-windows are identical);
+    only one such seed needs to be found for elongation to recover the
+    full site - matching _generate_all_recombination_sites_slow's own
+    forward-16nt-only query set (df_first_sites).
+    """
+    # See _all_windows_both_strands for why `end` is inclusive (start + 15,
+    # not start + 16) here.
+    seed_windows = [(seq[i:i + 16], i, i + 15) for i in range(len(seq) - 16 + 1)]
+
+    all_windows = []
+    for length in _SEED_LENGTHS:
+        all_windows.extend(_all_windows_both_strands(seq, length))
+    index = _build_signature_index(all_windows)
+
+    seen_pairs = set()
+    pairs = []
+    for sequence_1, start_1, end_1 in seed_windows:
+        candidates = {}
+        for signature in _deletion_signatures(sequence_1):
+            for sequence_2, start_2, end_2 in index.get(signature, ()):
+                candidates[(start_2, end_2, sequence_2)] = None
+
+        for start_2, end_2, sequence_2 in candidates:
+            if start_1 <= start_2:
+                seq_a, start_a, end_a = sequence_1, start_1, end_1
+                seq_b, start_b, end_b = sequence_2, start_2, end_2
+            else:
+                seq_a, start_a, end_a = sequence_2, start_2, end_2
+                seq_b, start_b, end_b = sequence_1, start_1, end_1
+
+            if end_a >= start_b:
+                continue  # overlapping (or the same window found via itself)
+
+            pair_key = (start_a, end_a, seq_a, start_b, end_b, seq_b)
+            if pair_key in seen_pairs:
+                continue
+
+            if levenshtein_distance(seq_a, seq_b, score_cutoff=1) >= 2:
+                continue  # signature-sharing false positive - see _deletion_signatures
+
+            seen_pairs.add(pair_key)
+            pairs.append((seq_a, start_a, end_a, seq_b, start_b, end_b))
+
+    return pd.DataFrame.from_records(
+        pairs, columns=['sequence_1', 'start_1', 'end_1', 'sequence_2', 'start_2', 'end_2'])
 
 
 def _elongate_sites(row, full_seq):
@@ -300,8 +454,7 @@ def find_recombination_candidates(seq):
     """
     empty_df = pd.DataFrame(columns=RECOMBINATION_COLUMNS)
 
-    df_first_sites, df_insertions, df_substitutions, df_deletions = _generate_all_recombination_sites(seq)
-    df_pairs = _generate_relevant_pairs(df_first_sites, df_insertions, df_substitutions, df_deletions)
+    df_pairs = _generate_relevant_pairs_fast(seq)
 
     if df_pairs.shape[0] == 0:
         return empty_df
