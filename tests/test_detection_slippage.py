@@ -3,6 +3,7 @@ import pandas as pd
 from eso.detection.slippage import (
     find_slippage_sites,
     find_slippage_candidates,
+    find_slippage_candidates_slow,
     collapse_slippage_sites,
     slippage_sites_for_constraints,
     modify_df_slippage,
@@ -36,6 +37,25 @@ def test_finds_single_nucleotide_run():
     assert not matches.empty
     assert matches.iloc[0].length_base_unit == 2
     assert matches.iloc[0].num_base_units == 3
+
+
+def test_non_ascii_input_falls_back_to_the_slow_path_without_crashing():
+    # Gap found while auditing: find_slippage_candidates' `if not
+    # seq.isascii()` fallback (the fast byte-mask scan needs a fixed-width
+    # encoding, so genuinely non-ASCII input - never real DNA, but this
+    # function itself doesn't validate that - falls back to the slow,
+    # str-native implementation) was never actually exercised by any test.
+    # Confirms it doesn't crash and agrees exactly with the slow
+    # implementation called directly, on a sequence containing one non-ASCII
+    # character plus a real repeat.
+    seq = "ACGT" * 5 + "é" + "TGTGTGTGTGTG"
+    assert not seq.isascii()
+
+    fast = find_slippage_candidates(seq)
+    slow = find_slippage_candidates_slow(seq)
+
+    pd.testing.assert_frame_equal(
+        fast.reset_index(drop=True), slow.reset_index(drop=True), check_like=True)
 
 
 def test_no_repeats_returns_empty():
