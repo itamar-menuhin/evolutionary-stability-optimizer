@@ -10,6 +10,7 @@ what gets reported.
 """
 
 from hypothesis import given, settings, strategies as st
+from rapidfuzz.distance.Levenshtein import distance as levenshtein_distance
 
 from eso.detection.recombination import (
     _generate_all_recombination_sites_slow,
@@ -17,6 +18,7 @@ from eso.detection.recombination import (
     _generate_relevant_pairs_slow,
     _elongate_sites,
     calc_recombination_score,
+    find_recombination_candidates,
 )
 from eso.sequence_utils import reverse_complement_seq
 
@@ -98,3 +100,23 @@ def test_fast_and_slow_agree_on_targeted_edge_cases():
     }
     for name, seq in tests.items():
         assert _fast_covered(seq) == _slow_covered(seq), name
+
+
+@settings(deadline=None)
+@given(seq=_dna_sequence)
+def test_no_inverted_repeat_ever_reaches_find_recombination_candidates(seq):
+    # Property-test version of a manual fuzz check run while auditing the
+    # inverted-repeat exclusion (issue #17, fa2a9ef) - that fix's own tests
+    # are hand-picked examples, and the differential fast/slow property tests
+    # above never apply the strand filter at all (both _fast_covered and
+    # _slow_covered call the raw, unfiltered pair generators directly), so
+    # nothing previously checked this invariant across random input. Every
+    # pair find_recombination_candidates actually returns (already filtered
+    # to strand == 'direct') must have a sequence_2 that is NOT within
+    # Levenshtein distance 1 of sequence_1's reverse complement - if it were,
+    # that pair is mechanistically an inverted repeat and must never reach
+    # calc_recombination_score (calibrated for direct repeats only).
+    df = find_recombination_candidates(seq)
+    for row in df.itertuples():
+        rc_1 = reverse_complement_seq(row.sequence_1)
+        assert levenshtein_distance(rc_1, row.sequence_2, score_cutoff=1) >= 2
