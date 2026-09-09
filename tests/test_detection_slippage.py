@@ -179,3 +179,36 @@ def test_modify_df_slippage_orders_sites_by_descending_risk():
     result = modify_df_slippage(df)
 
     assert result.iloc[0].start == 40
+
+
+def test_modify_df_slippage_carries_each_sites_own_risk_score_as_severity():
+    # Regression test for the eso.optimize retry-loop fix: each sub-site must
+    # inherit its parent slippage site's own log10_prob_slippage_ecoli as a
+    # `severity` column, not just use it to order the rows and then drop it -
+    # eso.constraints.convert_df_to_constraints threads this onto the
+    # constraint object itself.
+    df = pd.DataFrame([
+        {"start": 3, "end": 9, "length_base_unit": 2, "sequence": "TGTGTG",
+         "num_base_units": 3, "log10_prob_slippage_ecoli": -5.0},
+        {"start": 40, "end": 46, "length_base_unit": 2, "sequence": "ACACAC",
+         "num_base_units": 3, "log10_prob_slippage_ecoli": -1.0},
+    ])
+
+    result = modify_df_slippage(df)
+
+    assert (result[result.start == 3].severity == -5.0).all()
+    assert (result[result.start == 40].severity == -1.0).all()
+
+
+def test_modify_df_slippage_without_risk_column_has_no_severity_column():
+    # Hand-built input without the risk column at all (mirrors
+    # test_log10_prob_column_is_optional in tests/test_constraints.py) - must
+    # not raise, just skip adding the column.
+    df = pd.DataFrame([{
+        "start": 3, "end": 9, "length_base_unit": 2, "sequence": "TGTGTG",
+        "num_base_units": 3,
+    }])
+
+    result = modify_df_slippage(df)
+
+    assert "severity" not in result.columns

@@ -199,11 +199,14 @@ def test_indel_pair_targets_the_larger_regions_insertion_when_smaller_is_exclude
 
     result = recombination_to_multiple_avoidance_sites(df, [(0, 6)])
 
-    # targets the larger region (7nt window), one AvoidPattern per possible
-    # inserted nucleotide (4 candidates)
+    # targets the larger region (7nt window) directly, avoiding its own
+    # current literal sequence - a single AvoidPattern candidate, not one per
+    # possible inserted nucleotide (see _indel_recombinations' docstring for
+    # why the old 4-candidate reconstruction was equivalent but redundant).
     assert set(result.start) == {20}
     assert set(result.end) == {27}
-    assert len(result) == 4
+    assert len(result) == 1
+    assert result.iloc[0].sequence == "ACGTACG"
 
 
 def test_indel_pair_yields_no_constraint_when_both_regions_excluded():
@@ -255,6 +258,27 @@ def test_log10_prob_column_is_optional():
     assert not result.empty
 
 
+def test_output_carries_each_sites_own_risk_score_as_severity():
+    # Regression test for the eso.optimize retry-loop fix: each site's own
+    # log10_prob_recombination_ecoli must survive into the output as a
+    # `severity` column (not just used to order the rows, then discarded),
+    # so convert_df_to_constraints can thread it onto the constraint object.
+    df = pd.DataFrame([
+        {"start_1": 0, "end_1": 6, "sequence_1": "ACGTAC",
+         "start_2": 20, "end_2": 27, "sequence_2": "ACGTACG",
+         "log10_prob_recombination_ecoli": -5.0},
+        {"start_1": 40, "end_1": 46, "sequence_1": "TTGGCC",
+         "start_2": 60, "end_2": 67, "sequence_2": "TTGGCCA",
+         "log10_prob_recombination_ecoli": -1.0},
+    ])
+
+    result = recombination_to_multiple_avoidance_sites(df, ())
+
+    by_start = dict(zip(result.start, result.severity))
+    assert by_start[0] == -5.0
+    assert by_start[40] == -1.0
+
+
 # --- convert_df_to_constraints -------------------------------------------
 
 def test_empty_dataframe_returns_no_constraints():
@@ -281,3 +305,27 @@ def test_duplicate_rows_produce_one_constraint():
         {"sequence": "ACGT", "start": 0, "end": 4},
     ])
     assert len(convert_df_to_constraints(df)) == 1
+
+
+def test_severity_column_is_threaded_onto_the_constraint():
+    df = pd.DataFrame([
+        {"sequence": "ACGT", "start": 0, "end": 4, "severity": -3.5},
+        {"sequence": "TTTT", "start": 10, "end": 14, "severity": -1.0},
+    ])
+
+    constraints = convert_df_to_constraints(df)
+
+    by_location = {(c.location.start, c.location.end): c.eso_severity for c in constraints}
+    assert by_location == {(0, 4): -3.5, (10, 14): -1.0}
+
+
+def test_missing_severity_column_leaves_constraints_without_the_attribute():
+    # optimize.py's retry loop treats a missing .eso_severity as maximally
+    # severe (getattr(..., float('inf'))) - the attribute genuinely isn't set
+    # at all here (not set to some default value), for constraint types with
+    # no risk model (restriction enzymes, methylation motifs).
+    df = pd.DataFrame([{"sequence": "ACGT", "start": 0, "end": 4}])
+
+    constraints = convert_df_to_constraints(df)
+
+    assert not hasattr(constraints[0], "eso_severity")
