@@ -37,6 +37,11 @@ from eso.detection._overlap import collapse_overlapping_intervals, collapse_over
 
 SLIPPAGE_COLUMNS = ['start', 'end', 'length_base_unit', 'sequence']
 
+#: byte.translate table mapping every nonzero byte to 1, zero stays zero -
+#: turns a raw XOR result into a clean 0/1 "differs here" mask in one C-level
+#: pass (see _tandem_match_masks).
+_NONZERO_TO_ONE = bytes([0] + [1] * 255)
+
 
 def _find_all(a_str, sub):
     """Non-overlapping occurrences of `sub` in `a_str`."""
@@ -82,15 +87,6 @@ def _generate_slippage_sites_current_subunit(seq, subunit):
     return curr_slippage_sites
 
 
-def _find_slippage_len1(seq):
-    slippage_sites = []
-    for nt in ['A', 'C', 'G', 'T']:
-        slippage_sites.extend(_generate_slippage_sites_current_subunit(seq, nt))
-    return pd.DataFrame.from_records(
-        data=slippage_sites, columns=['start', 'end', 'sequence', 'length_base_unit'],
-    ).drop_duplicates().reset_index(drop=True)
-
-
 def _find_relevant_subunits_len_l(seq, length):
     """Unique substrings of `length` that appear 3+ times in a row, as repeat-unit candidates.
 
@@ -125,6 +121,209 @@ def _find_slippage_len_l(seq, length):
     return pd.DataFrame.from_records(data=slippage_sites, columns=['start', 'end', 'sequence', 'length_base_unit'])
 
 
+def _find_slippage_len1_slow(seq):
+    slippage_sites = []
+    for nt in ['A', 'C', 'G', 'T']:
+        slippage_sites.extend(_generate_slippage_sites_current_subunit(seq, nt))
+    return pd.DataFrame.from_records(
+        data=slippage_sites, columns=['start', 'end', 'sequence', 'length_base_unit'],
+    ).drop_duplicates().reset_index(drop=True)
+
+
+def _find_raw_candidates_slow(seq):
+    """Reference implementation, kept only for the differential property test
+    against find_slippage_candidates (tests/test_detection_slippage_properties.py)
+    and as a fallback for non-ASCII input (never real DNA - validate_dna_alphabet
+    already guarantees ACGT-only upstream of every real caller, but this makes
+    that assumption explicit rather than silent). O(n) per unit length via
+    _find_relevant_subunits_len_l/_generate_slippage_sites_current_subunit
+    above - see _find_raw_candidates_fast for the faster replacement.
+
+    Returns raw candidates only (no score/filter columns) - see
+    find_slippage_candidates_slow for the scored, directly-comparable version.
+    """
+    slippage_sites_list = [_find_slippage_len1_slow(seq)]
+    for length in range(2, 16):
+        slippage_sites_list.append(_find_slippage_len_l(seq, length))
+    return pd.concat(slippage_sites_list, ignore_index=True)[SLIPPAGE_COLUMNS]
+
+
+def _tandem_match_masks(seq_bytes, max_unit_len):
+    """mask[unit_len][k] == 0 iff seq[k] == seq[k+unit_len] - a pure content
+    comparison with no scan state, computed once per unit_len via a
+    C-level byte XOR over the whole sequence instead of a per-position
+    Python loop (find_slippage_candidates_slow's approach above).
+
+    Ported from STABLES's automate_goi_repeat_alternatives.py (an
+    independently-developed tandem-repeat scanner solving the same
+    problem against the same calibrated copy-count floor - see
+    _MIN_COPIES below), where this exact rewrite was validated against
+    1,682,472 differential test cases and measured an 11.5x-73.3x speedup
+    over the equivalent per-position scan.
+    """
+    n = len(seq_bytes)
+    masks = {}
+    for unit_len in range(1, max_unit_len + 1):
+        if unit_len >= n:
+            masks[unit_len] = b''
+            continue
+        xored = (
+            int.from_bytes(seq_bytes[unit_len:], 'big') ^ int.from_bytes(seq_bytes[:-unit_len], 'big')
+        ).to_bytes(n - unit_len, 'big')
+        masks[unit_len] = xored.translate(_NONZERO_TO_ONE)
+    return masks
+
+
+def _tandem_repeat_positions(mask, n, unit_len, cmin):
+    """Yields (start, copies) for every position with >= cmin consecutive
+    copies of whatever unit_len-length unit starts there, via bytes.find (a
+    C-level substring search) rather than testing each position in a
+    Python loop.
+
+    `mask[start : start + (cmin-1)*unit_len]` all-zero is exactly
+    equivalent to "the run starting at `start` has >= cmin copies": by
+    transitivity, seq[start+d] == seq[start+unit_len+d] == ... for every
+    offset d in [0, unit_len), so the (cmin-1) inter-copy comparisons
+    spanning that mask range are collectively identical to the chained
+    equality checks _find_longest_match's while loop makes one at a time.
+
+    Deliberately advances by exactly 1 after each match, NOT past the
+    whole matched run - an earlier version jumped ahead
+    (`i = start + (copies-1)*unit_len + 1`), which is safe when consecutive
+    candidates share the same repeating content, but silently skipped a
+    real, independently-valid same-length candidate whenever the
+    periodicity condition happens to hold across a boundary between two
+    genuinely different repeating units (confirmed directly: "CACACACACA"
+    + "ACAACAACAA" has both a unit_len=3 run of "ACA" starting at 7 and,
+    overlapping it, a *different* unit_len=3 run of "CAA" starting at 8 -
+    jumping past the first one after finding it silently dropped the
+    second, which find_slippage_candidates_slow's per-distinct-subunit
+    approach does find). The caller (_find_raw_candidates_fast) is
+    responsible for dropping the resulting purely-redundant nested
+    candidates (see _drop_fully_contained_same_length) - this generator's
+    job is completeness, not deduplication.
+    """
+    threshold = (cmin - 1) * unit_len
+    pattern = b'\x00' * threshold
+    m = len(mask)
+    i = 0
+    while i <= m - threshold:
+        start = mask.find(pattern, i)
+        if start == -1:
+            return
+        run_end = mask.find(b'\x01', start)
+        if run_end == -1:
+            run_end = m
+        run_length = run_end - start
+        copies = min(1 + run_length // unit_len, (n - start) // unit_len)
+        yield start, copies
+        i = start + 1
+
+
+def _drop_fully_contained_same_content(candidates):
+    """Given a list of (start, end, unit, unit_len) tuples for a SINGLE
+    unit_len, drops a candidate only if both (a) its (start, end) span is
+    fully contained in another candidate's span AND (b) that other
+    candidate has the exact same repeated-unit CONTENT (the actual
+    substring, e.g. "CA" vs "AC") - a purely redundant nested re-detection
+    of the same physical run from an offset within it (e.g. a homopolymer
+    of length 15 scanned from every position independently yields spans
+    [0,15), [1,15), [2,14)..., all sharing unit "A" - all but the first are
+    redundant).
+
+    Deliberately does NOT drop a nested candidate with DIFFERENT content
+    (e.g. "CACACACACA" at [0,10) and its 1-shifted reading "ACACACAC" at
+    [1,9), fully contained within it but a genuinely distinct repeating
+    string) - find_slippage_candidates_slow's per-distinct-subunit-string
+    approach keeps both (see its own module docstring's "GCGCGCGC vs
+    1-shifted CGCGCG" note), and find_slippage_candidates is documented as
+    returning every such raw candidate, uncollapsed - collapsing same-
+    content-different-phase-vs-different-content candidates differently is
+    exactly what the downstream collapse_slippage_sites /
+    slippage_sites_for_constraints step is for, not this function.
+
+    O(k^2) in the number of same-unit_len candidates k, not the sequence
+    length - k is small in practice (bounded by how many genuinely distinct
+    overlapping repeats exist at one unit_len, not by sequence length).
+    """
+    kept = []
+    for candidate in sorted(candidates, key=lambda c: (c[0], -(c[1] - c[0]))):
+        start, end, unit, _unit_len = candidate
+        if any(
+            other_start <= start and end <= other_end and other_unit == unit
+            for other_start, other_end, other_unit, _ in kept
+        ):
+            continue
+        kept.append(candidate)
+    return kept
+
+
+def _min_copies(unit_len):
+    # 12 for length-1 units (below that, length-2 detection of the same
+    # region always outscores it - see module docstring), 3 for longer units.
+    return 12 if unit_len == 1 else 3
+
+
+def _find_raw_candidates_fast(seq):
+    """Same candidates as _find_raw_candidates_slow, found via the byte-mask
+    scan (_tandem_match_masks/_tandem_repeat_positions) instead of a
+    per-position Python loop. Requires ASCII input - see
+    find_slippage_candidates's fallback for why that's always true for real
+    DNA anyway.
+    """
+    n = len(seq)
+    seq_bytes = seq.encode('ascii')
+    masks = _tandem_match_masks(seq_bytes, 15)
+    slippage_sites = []
+    for unit_len in range(1, 16):
+        cmin = _min_copies(unit_len)
+        # "unit" here is the base unit_len-length repeating token (e.g. "CA"),
+        # used to distinguish a redundant nested re-detection of the SAME
+        # repeating content from a genuinely different overlapping repeat
+        # of different content - see _drop_fully_contained_same_content.
+        # The full matched span (seq[start:end]) is substituted back in
+        # afterward, once filtering is done.
+        candidates_this_length = [
+            (start, start + copies * unit_len, seq[start:start + unit_len], unit_len)
+            for start, copies in _tandem_repeat_positions(masks[unit_len], n, unit_len, cmin)
+        ]
+        for start, end, _base_unit, kept_unit_len in _drop_fully_contained_same_content(candidates_this_length):
+            slippage_sites.append((start, end, seq[start:end], kept_unit_len))
+    return pd.DataFrame.from_records(
+        data=slippage_sites, columns=['start', 'end', 'sequence', 'length_base_unit'],
+    ).drop_duplicates().reset_index(drop=True)[SLIPPAGE_COLUMNS]
+
+
+def _score_and_filter(df_slippage):
+    """Shared scoring/filtering step for both the fast and slow candidate
+    paths, so find_slippage_candidates and find_slippage_candidates_slow
+    return directly-comparable output (see the differential property test
+    in tests/test_detection_slippage_properties.py).
+    """
+    df_slippage = df_slippage.copy()
+    df_slippage.loc[:, 'num_base_units'] = (
+        df_slippage.sequence.apply(len) / df_slippage.length_base_unit
+    ).astype(int)
+
+    df_slippage.loc[:, 'log10_prob_slippage_ecoli'] = -4.749 + 0.063 * df_slippage['num_base_units']
+    df_slippage.loc[df_slippage.length_base_unit == 1, 'log10_prob_slippage_ecoli'] = (
+        -12.9 + 0.729 * df_slippage['num_base_units']
+    )
+
+    df_slippage = df_slippage[df_slippage.log10_prob_slippage_ecoli > -9]
+    return df_slippage.sort_values('log10_prob_slippage_ecoli', ascending=False).reset_index(drop=True)
+
+
+def find_slippage_candidates_slow(seq):
+    """Reference implementation of find_slippage_candidates, kept only for
+    the differential property test against it
+    (tests/test_detection_slippage_properties.py) - see
+    _find_raw_candidates_slow for why this exists and when it's used as a
+    real (not just test) fallback.
+    """
+    return _score_and_filter(_find_raw_candidates_slow(seq))
+
+
 def find_slippage_candidates(seq):
     """Find every candidate slippage (SSR) hotspot in `seq` across repeat-unit
     lengths 1-15, WITHOUT collapsing overlapping candidates down to one
@@ -141,22 +340,15 @@ def find_slippage_candidates(seq):
     makes sense for the collapsed, human-facing view - see
     find_slippage_sites/collapse_slippage_sites).
     """
-    slippage_sites_list = [_find_slippage_len1(seq)]
-    for length in range(2, 16):
-        slippage_sites_list.append(_find_slippage_len_l(seq, length))
-    df_slippage = pd.concat(slippage_sites_list, ignore_index=True)[SLIPPAGE_COLUMNS]
-
-    df_slippage.loc[:, 'num_base_units'] = (
-        df_slippage.sequence.apply(len) / df_slippage.length_base_unit
-    ).astype(int)
-
-    df_slippage.loc[:, 'log10_prob_slippage_ecoli'] = -4.749 + 0.063 * df_slippage['num_base_units']
-    df_slippage.loc[df_slippage.length_base_unit == 1, 'log10_prob_slippage_ecoli'] = (
-        -12.9 + 0.729 * df_slippage['num_base_units']
-    )
-
-    df_slippage = df_slippage[df_slippage.log10_prob_slippage_ecoli > -9]
-    return df_slippage.sort_values('log10_prob_slippage_ecoli', ascending=False).reset_index(drop=True)
+    if not seq.isascii():
+        # Never real DNA (validate_dna_alphabet guarantees ACGT-only
+        # upstream of every real caller) - the byte-mask approach needs a
+        # fixed-width encoding, so fall back to the slow, str-native
+        # implementation rather than assume ASCII.
+        raw = _find_raw_candidates_slow(seq)
+    else:
+        raw = _find_raw_candidates_fast(seq)
+    return _score_and_filter(raw)
 
 
 def slippage_sites_for_constraints(df_slippage):
