@@ -1,6 +1,6 @@
 """Tests that --derive-codon-usage-table-from-assembly and
 --derive-tai-score-from-assembly are wired correctly through eso.cli.main -
-mocking eso.ncbi_genome.fetch_genome_package (no real network access), same
+mocking eso.ncbi_genome.fetch_genome_package_for (no real network access), same
 pattern as tests/test_cli_codon_usage_table.py.
 """
 
@@ -43,7 +43,7 @@ def _mock_run_pipeline(monkeypatch):
 def test_derive_codon_usage_table_from_assembly_reaches_pipeline_main(tmp_path, monkeypatch):
     captured = _mock_run_pipeline(monkeypatch)
     package = _fake_ecoli_package(tmp_path)
-    monkeypatch.setattr(cli, 'fetch_genome_package', lambda accession: package)
+    monkeypatch.setattr(cli, 'fetch_genome_package_for', lambda accession: package)
 
     exit_code = cli.main(['--derive-codon-usage-table-from-assembly', 'GCF_000005845.2'])
 
@@ -55,7 +55,7 @@ def test_derive_codon_usage_table_from_assembly_reaches_pipeline_main(tmp_path, 
 def test_derive_tai_score_from_assembly_reaches_pipeline_main(tmp_path, monkeypatch):
     captured = _mock_run_pipeline(monkeypatch)
     package = _fake_ecoli_package(tmp_path)
-    monkeypatch.setattr(cli, 'fetch_genome_package', lambda accession: package)
+    monkeypatch.setattr(cli, 'fetch_genome_package_for', lambda accession: package)
 
     exit_code = cli.main([
         '--derive-tai-score-from-assembly', 'GCF_000005845.2',
@@ -90,7 +90,7 @@ def test_a_fetch_failure_fails_fast_with_the_underlying_message(monkeypatch, cap
     def fake_fetch(accession):
         raise GenomeFetchError(f"Could not fetch NCBI genome package for {accession!r}.")
 
-    monkeypatch.setattr(cli, 'fetch_genome_package', fake_fetch)
+    monkeypatch.setattr(cli, 'fetch_genome_package_for', fake_fetch)
 
     exit_code = cli.main(['--derive-codon-usage-table-from-assembly', 'GCF_bad.1'])
 

@@ -14,7 +14,7 @@ from eso.codon_usage import (
 )
 from eso.custom_score import CustomScoreFileError, load_custom_score_from_file
 from eso.io_utils import IndexesFileError, load_indexes_from_file
-from eso.ncbi_genome import GenomeFetchError, fetch_genome_package
+from eso.ncbi_genome import GenomeFetchError, fetch_genome_package_for
 from eso.pipeline import main as run_pipeline
 from eso.tai import (
     build_tai_score_fn,
@@ -58,18 +58,23 @@ def build_parser():
                              "dataset) that isn't a named species. Takes precedence over "
                              "--organism-name; overridden itself by --custom-score-file.")
     parser.add_argument('--derive-codon-usage-table-from-assembly', default=None,
-                        help="An NCBI RefSeq/GenBank assembly accession (e.g. GCF_000005845.2) - "
-                             "fetches that organism's genome and derives a real, organism-specific "
-                             "codon-usage table from its own highly-expressed genes (see "
+                        help="An NCBI RefSeq/GenBank assembly accession (e.g. GCF_000005845.2), OR "
+                             "a bare species name/TaxID (e.g. 'Escherichia coli' or 562 - resolved "
+                             "to its official assembly automatically; a name matching more than "
+                             "one species, e.g. a bare genus, is rejected with a list of the "
+                             "matches, asking for a more specific one) - fetches that organism's "
+                             "genome and derives a real, organism-specific codon-usage table from "
+                             "its own highly-expressed genes (see "
                              "eso.codon_usage.derive_table_from_genome), instead of --organism-name "
                              "or --codon-usage-table-file. Requires network access. Mutually "
                              "exclusive with --codon-usage-table-file.")
     parser.add_argument('--derive-tai-score-from-assembly', default=None,
-                        help="An NCBI RefSeq/GenBank assembly accession - fetches that organism's "
-                             "genome and scores sequences by real tRNA Adaptation Index (tAI) "
-                             "instead of codon-usage-table CAI (see eso.tai). Requires "
-                             "--tai-kingdom. Requires network access. Mutually exclusive with "
-                             "--custom-score-file.")
+                        help="An NCBI RefSeq/GenBank assembly accession, or a bare species "
+                             "name/TaxID (see --derive-codon-usage-table-from-assembly for how "
+                             "that resolves) - fetches that organism's genome and scores sequences "
+                             "by real tRNA Adaptation Index (tAI) instead of codon-usage-table CAI "
+                             "(see eso.tai). Requires --tai-kingdom. Requires network access. "
+                             "Mutually exclusive with --custom-score-file.")
     parser.add_argument('--tai-kingdom', default=None, choices=['prokaryote', 'eukaryote'],
                         help="Required with --derive-tai-score-from-assembly - see eso.tai.derive_tai_weights_from_gff.")
     parser.add_argument('--tai-method', default='auto', choices=['generic', 'species-optimized', 'auto'],
@@ -161,7 +166,7 @@ def main(argv=None):
             return 1
     if args.derive_codon_usage_table_from_assembly is not None:
         try:
-            package = fetch_genome_package(args.derive_codon_usage_table_from_assembly)
+            package = fetch_genome_package_for(args.derive_codon_usage_table_from_assembly)
             genetic_code_num = detect_genetic_code_num_from_gff(package.gff_path)
             codon_usage_table = derive_table_from_genome(package.cds_fasta_path, genetic_code_num)
         except (GenomeFetchError, CustomCodonTableFileError) as e:
@@ -178,7 +183,7 @@ def main(argv=None):
             return 1
     if args.derive_tai_score_from_assembly is not None:
         try:
-            package = fetch_genome_package(args.derive_tai_score_from_assembly)
+            package = fetch_genome_package_for(args.derive_tai_score_from_assembly)
             genetic_code_num = detect_genetic_code_num_from_gff(package.gff_path)
             if args.tai_method == 'generic':
                 tai_weights = derive_tai_weights_from_gff(

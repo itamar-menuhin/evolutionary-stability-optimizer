@@ -17,7 +17,7 @@ import pytest
 import time
 
 from eso.codon_usage import derive_table_from_genome, detect_genetic_code_num_from_gff
-from eso.ncbi_genome import fetch_genome_package
+from eso.ncbi_genome import fetch_genome_package, resolve_assembly_accession
 from eso.tai import derive_species_optimized_tai_weights, derive_tai_weights_from_gff
 
 pytestmark = pytest.mark.skipif(
@@ -61,3 +61,8 @@ def test_species_optimized_tai_end_to_end_for_a_real_archaeon(tmp_path):
 
     assert len(weights) == 60
     assert all(0.0 < w <= 1.0 for w in weights.values())
+
+
+def test_resolve_assembly_accession_for_a_real_organism_by_name_and_taxid():
+    assert resolve_assembly_accession("Methanocaldococcus jannaschii") == _ARCHAEON_ACCESSION
+    assert resolve_assembly_accession(2190) == _ARCHAEON_ACCESSION
