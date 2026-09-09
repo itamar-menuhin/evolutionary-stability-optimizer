@@ -65,7 +65,27 @@ def validate_dna_alphabet(seq, sequence_label="This sequence"):
 
 
 def reverse_complement_seq(seq):
-    return ''.join(COMPLEMENT[x] for x in seq[::-1])
+    """Reverse-complement a DNA sequence (A/C/G/T, case-insensitive - always
+    returned uppercase, matching this codebase's convention of uppercasing
+    sequences once at the point they're first read - see e.g.
+    eso.pipeline.backend's `str(record.seq).upper()`).
+
+    Every current caller only ever passes a substring of an already-validated
+    (validate_dna_alphabet) sequence, but nothing enforced that here - a
+    stray ambiguity code or non-DNA character would otherwise hit a raw,
+    unhelpful `KeyError` deep in this function with no eso-level message at
+    all, the exact failure mode validate_dna_alphabet's own docstring
+    describes fixing elsewhere. Raises the same InvalidSequenceError here
+    instead, so this function is safe to call on its own, not just implicitly
+    trusted to only ever see pre-validated input.
+    """
+    try:
+        return ''.join(COMPLEMENT[x.upper()] for x in seq[::-1])
+    except KeyError as e:
+        raise InvalidSequenceError(
+            f"Cannot reverse-complement {seq!r}: contains a letter other than A, C, G, T "
+            f"({e.args[0]!r})."
+        ) from None
 
 
 def add_backward_sites(df):
@@ -92,9 +112,20 @@ def parse_region(region_string):
 
     region_list = region_string.split(',')
     try:
-        return [
-            (int(region.strip().split('-')[0]) - 1, int(region.strip().split('-')[1]))
-            for region in region_list
-        ]
+        regions = []
+        for region in region_list:
+            parts = region.strip().split('-')
+            # Confirmed a real, previously-silent bug: with `[0]`/`[1]` pulled
+            # directly from an unchecked split(), an extra dash (e.g. a typo
+            # like "10-20-30", or "10--5") silently parsed as (9, 20) -
+            # dropping "-30"/producing a bogus negative end entirely
+            # unflagged - rather than being caught here as malformed, exactly
+            # the kind of input this function's own docstring promises to
+            # reject. Confirmed directly before this fix.
+            if len(parts) != 2:
+                return 'error'
+            start, end = parts
+            regions.append((int(start) - 1, int(end)))
+        return regions
     except (ValueError, IndexError):
         return 'error'
