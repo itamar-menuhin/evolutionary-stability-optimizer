@@ -100,6 +100,21 @@ def test_genetic_code_num_is_required():
         derive_table_from_genome("irrelevant.fna", genetic_code_num=None)
 
 
+def test_genetic_code_with_a_different_degeneracy_structure_is_rejected(tmp_path):
+    # Regression test for a real gap, confirmed directly (not assumed): the
+    # ENc formula _calc_enc uses has fixed coefficients (2, 9, 1, 5, 3) that
+    # are the standard genetic code's own count of amino-acid families at
+    # each degeneracy level - true for tables 1 and 11, but genuinely
+    # different for every other NCBI genetic code table (e.g. table 2,
+    # vertebrate mitochondrial, has no 3-fold-degenerate amino acid at all -
+    # AGA/AGG are stop codons there, not Arg). Using a mismatched table
+    # wouldn't crash on its own - it would silently compute a meaningless
+    # ENc value - so this must be caught explicitly instead.
+    fasta = _write_fasta(tmp_path, [("gene", _biased_gene(60))])
+    with pytest.raises(CustomCodonTableFileError, match="degeneracy structure"):
+        derive_table_from_genome(fasta, genetic_code_num=2)
+
+
 def test_stop_codon_default_is_present_when_not_derivable_from_the_reference_set(tmp_path):
     fasta = _write_fasta(tmp_path, [("gene", _unbiased_gene(60))])
     table = derive_table_from_genome(fasta, genetic_code_num=_GENETIC_CODE_NUM, min_len_codons=100, top_perc=1.0, min_gene_count=1)

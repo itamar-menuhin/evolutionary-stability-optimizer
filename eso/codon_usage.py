@@ -258,6 +258,38 @@ def detect_genetic_code_num_from_gff(gff_path):
     return votes.most_common(1)[0][0]
 
 
+#: The Wright 1990 ENc formula's own fixed coefficients (the 2, 9, 1, 5, 3 in
+#: _calc_enc's final expression) aren't free parameters - they ARE the
+#: standard genetic code's own count of amino-acid families at each
+#: degeneracy level (1-fold: Met+Trp=2; 2-fold: 9 families; 3-fold: Ile
+#: alone=1; 4-fold: 5 families; 6-fold: Leu+Arg+Ser=3). Confirmed directly
+#: (checked every NCBI genetic code table Biopython bundles, not assumed)
+#: that this exact family-count structure holds only for table 1 (standard)
+#: and table 11 (bacterial/archaeal/plant-plastid) - the two genuinely
+#: supported by this module - and genuinely differs for every one of the
+#: other 25 tables (e.g. table 2, vertebrate mitochondrial, has no 3-fold
+#: class at all: AGA/AGG are stop codons there, not Arg). Using this formula
+#: with a mismatched genetic code wouldn't crash - _calc_enc's own fallback
+#: (1/degree) for an empty degeneracy class silently absorbs the gap - it
+#: would silently compute a scientifically meaningless ENc value, biasing
+#: the entire reference-gene selection this table/weight derivation depends
+#: on, with no error or warning at all.
+_ENC_FORMULA_DEGENERACY_COUNTS = {1: 2, 2: 9, 3: 1, 4: 5, 6: 3}
+
+
+def _validate_enc_formula_applies(aa_to_codons, genetic_code_num):
+    degeneracy_counts = dict(Counter(len(codons) for codons in aa_to_codons.values()))
+    if degeneracy_counts != _ENC_FORMULA_DEGENERACY_COUNTS:
+        raise CustomCodonTableFileError(
+            f"genetic_code_num={genetic_code_num} has a different codon-degeneracy structure than "
+            "the standard genetic code (tables 1 and 11) - the ENc (Effective Number of Codons) "
+            "formula this reference-gene selection relies on is calibrated specifically for that "
+            "structure and would silently compute a meaningless result here, not raise an error on "
+            "its own. derive_table_from_genome and derive_species_optimized_tai_weights currently "
+            "only support genetic_code_num 1 or 11."
+        )
+
+
 def _calc_enc(codons, aa_to_codons):
     """Effective Number of Codons (Wright 1990) - a purely sequence-intrinsic
     measure of codon bias needing no external annotation at all. Lower means
@@ -305,6 +337,7 @@ def _select_reference_codons(cds_fasta_path, genetic_code_num, min_len_codons, t
     aa_to_codons = defaultdict(list)
     for codon, aa in unambiguous_dna_by_id[genetic_code_num].forward_table.items():
         aa_to_codons[aa].append(codon)
+    _validate_enc_formula_applies(aa_to_codons, genetic_code_num)
 
     genes = []
     for record in SeqIO.parse(cds_fasta_path, 'fasta'):
@@ -362,12 +395,18 @@ def derive_table_from_genome(cds_fasta_path, genetic_code_num=None, min_len_codo
     genome where `top_perc` alone would pick too few genes to reliably
     estimate rarer codons' frequencies.
 
-    `genetic_code_num`: an NCBI genetic code table number (e.g. 11 for
-    bacteria/archaea/plant plastids, 1 for the standard/eukaryotic-nuclear
-    code) - required. This function only reads the CDS FASTA, not the GFF,
-    so it can't auto-detect this itself; look it up first via
-    `detect_genetic_code_num_from_gff(gff_path)`, using the GFF from the
-    same `eso.ncbi_genome.fetch_genome_package` call.
+    `genetic_code_num`: an NCBI genetic code table number - required, and
+    currently must be 11 (bacteria/archaea/plant plastids) or 1 (the
+    standard/eukaryotic-nuclear code); the ENc formula this relies on
+    (`_calc_enc`) is calibrated specifically for the codon-degeneracy
+    structure those two tables share, and raises a clear error for any other
+    table rather than silently returning a meaningless result (confirmed
+    directly: every other NCBI genetic code table has a genuinely different
+    degeneracy structure - e.g. table 2, vertebrate mitochondrial, has no
+    3-fold-degenerate amino acid at all). This function only reads the CDS
+    FASTA, not the GFF, so it can't auto-detect this itself; look it up
+    first via `detect_genetic_code_num_from_gff(gff_path)`, using the GFF
+    from the same `eso.ncbi_genome.fetch_genome_package` call.
 
     Returns
     -------
