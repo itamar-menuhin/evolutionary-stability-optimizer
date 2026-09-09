@@ -281,6 +281,53 @@ def _calc_enc(codons, aa_to_codons):
     return 2 + 9 / d_vec[2] + 1 / d_vec[3] + 5 / d_vec[4] + 3 / d_vec[6]
 
 
+def _select_reference_codons(cds_fasta_path, genetic_code_num, min_len_codons, top_perc, min_gene_count):
+    """Shared reference-gene selection behind both `derive_table_from_genome`
+    (Sharp & Li CAI weights) and `eso.tai.derive_species_optimized_tai_weights`
+    (RSCU for its fitness function) - both need "this genome's own
+    highly-expressed-like gene set", and must use the *identical* selection
+    to be meaningfully comparable/combinable, not two subtly-different
+    reimplementations of the same idea.
+
+    See `derive_table_from_genome`'s docstring for what `min_len_codons`/
+    `top_perc`/`min_gene_count` mean and why these particular defaults were
+    chosen - unchanged by this refactor.
+
+    Returns
+    -------
+    (aa_to_codons, reference_codons) - `aa_to_codons` maps each one-letter
+    amino acid code to its list of synonymous codons for `genetic_code_num`;
+    `reference_codons` is every codon (with repeats) across the selected
+    reference genes, flattened - sufficient for any codon-count-based
+    statistic (Sharp & Li weights, RSCU, ...), no need for original
+    per-gene sequence order.
+    """
+    aa_to_codons = defaultdict(list)
+    for codon, aa in unambiguous_dna_by_id[genetic_code_num].forward_table.items():
+        aa_to_codons[aa].append(codon)
+
+    genes = []
+    for record in SeqIO.parse(cds_fasta_path, 'fasta'):
+        seq = str(record.seq).upper()
+        codons = [seq[i:i + 3] for i in range(0, len(seq) - 2, 3)]
+        codons = [c for c in codons if len(c) == 3 and set(c) <= set('ACGT')]
+        if len(codons) < min_len_codons:
+            continue
+        genes.append((_calc_enc(codons, aa_to_codons), codons))
+
+    if not genes:
+        raise CustomCodonTableFileError(
+            f"No gene in '{cds_fasta_path}' has at least min_len_codons={min_len_codons} "
+            "codons - try a lower min_len_codons, or check this is really a CDS FASTA."
+        )
+
+    genes.sort(key=lambda item: item[0])
+    n_reference = max(round(top_perc * len(genes)), min(min_gene_count, len(genes)))
+    reference_codons = [codon for _, codons in genes[:n_reference] for codon in codons]
+
+    return aa_to_codons, reference_codons
+
+
 def derive_table_from_genome(cds_fasta_path, genetic_code_num=None, min_len_codons=100,
                               top_perc=0.05, min_gene_count=50):
     """Derive a real, organism-specific codon-usage table directly from a
@@ -336,28 +383,8 @@ def derive_table_from_genome(cds_fasta_path, genetic_code_num=None, min_len_codo
             "detect_genetic_code_num_from_gff(gff_path) using the GFF that came with this "
             "same genome package."
         )
-    aa_to_codons = defaultdict(list)
-    for codon, aa in unambiguous_dna_by_id[genetic_code_num].forward_table.items():
-        aa_to_codons[aa].append(codon)
-
-    genes = []
-    for record in SeqIO.parse(cds_fasta_path, 'fasta'):
-        seq = str(record.seq).upper()
-        codons = [seq[i:i + 3] for i in range(0, len(seq) - 2, 3)]
-        codons = [c for c in codons if len(c) == 3 and set(c) <= set('ACGT')]
-        if len(codons) < min_len_codons:
-            continue
-        genes.append((_calc_enc(codons, aa_to_codons), codons))
-
-    if not genes:
-        raise CustomCodonTableFileError(
-            f"No gene in '{cds_fasta_path}' has at least min_len_codons={min_len_codons} "
-            "codons - try a lower min_len_codons, or check this is really a CDS FASTA."
-        )
-
-    genes.sort(key=lambda item: item[0])
-    n_reference = max(round(top_perc * len(genes)), min(min_gene_count, len(genes)))
-    reference_codons = [codon for _, codons in genes[:n_reference] for codon in codons]
+    aa_to_codons, reference_codons = _select_reference_codons(
+        cds_fasta_path, genetic_code_num, min_len_codons, top_perc, min_gene_count)
 
     codon_counts = Counter(reference_codons)
     codon_usage_table = {}

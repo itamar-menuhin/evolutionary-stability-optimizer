@@ -16,7 +16,12 @@ from eso.custom_score import CustomScoreFileError, load_custom_score_from_file
 from eso.io_utils import IndexesFileError, load_indexes_from_file
 from eso.ncbi_genome import GenomeFetchError, fetch_genome_package
 from eso.pipeline import main as run_pipeline
-from eso.tai import build_tai_score_fn, derive_tai_weights_from_gff
+from eso.tai import (
+    build_tai_score_fn,
+    derive_species_optimized_tai_weights,
+    derive_tai_weights,
+    derive_tai_weights_from_gff,
+)
 
 
 def build_parser():
@@ -67,6 +72,13 @@ def build_parser():
                              "--custom-score-file.")
     parser.add_argument('--tai-kingdom', default=None, choices=['prokaryote', 'eukaryote'],
                         help="Required with --derive-tai-score-from-assembly - see eso.tai.derive_tai_weights_from_gff.")
+    parser.add_argument('--tai-method', default='auto', choices=['generic', 'species-optimized', 'auto'],
+                        help="'generic': dos Reis et al.'s fixed weights (fast, deterministic). "
+                             "'species-optimized': optimize the same formula's wobble parameters for this "
+                             "organism (reimplements the real gtAI algorithm - see eso.tai.derive_species_optimized_tai_weights), "
+                             "slower and stochastic, can fail on a small/unusual genome. "
+                             "'auto' (default): try species-optimized, falling back to generic (with a "
+                             "warning explaining why) on any failure.")
     parser.add_argument('--custom-score-file', default=None,
                         help="Path to a Python file scoring sequences your own way, instead of CAI/tAI - see "
                              "examples/custom_score_template.py for a copyable starting point. Overrides "
@@ -168,9 +180,18 @@ def main(argv=None):
         try:
             package = fetch_genome_package(args.derive_tai_score_from_assembly)
             genetic_code_num = detect_genetic_code_num_from_gff(package.gff_path)
-            tai_weights = derive_tai_weights_from_gff(
-                package.gff_path, kingdom=args.tai_kingdom, genetic_code_num=genetic_code_num,
-                genome_fasta_path=package.genome_fasta_path)
+            if args.tai_method == 'generic':
+                tai_weights = derive_tai_weights_from_gff(
+                    package.gff_path, kingdom=args.tai_kingdom, genetic_code_num=genetic_code_num,
+                    genome_fasta_path=package.genome_fasta_path)
+            elif args.tai_method == 'species-optimized':
+                tai_weights = derive_species_optimized_tai_weights(
+                    package.cds_fasta_path, package.gff_path, kingdom=args.tai_kingdom,
+                    genetic_code_num=genetic_code_num, genome_fasta_path=package.genome_fasta_path)
+            else:  # 'auto'
+                tai_weights = derive_tai_weights(
+                    package.gff_path, kingdom=args.tai_kingdom, cds_fasta_path=package.cds_fasta_path,
+                    genetic_code_num=genetic_code_num, genome_fasta_path=package.genome_fasta_path)
             custom_score_fn = build_tai_score_fn(tai_weights)
         except (GenomeFetchError, CustomCodonTableFileError, ValueError) as e:
             print(str(e), file=sys.stderr)

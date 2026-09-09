@@ -386,6 +386,81 @@ A malformed file (missing columns, a codon filed under the wrong amino acid, a n
 frequency) fails immediately with a plain-English message, before any optimization runs -
 mirroring `--custom-score-file`'s own validation philosophy.
 
+## Deriving CAI/tAI directly from an organism's own genome
+
+`organism_name`/`--codon-usage-table-file` cover a handful of named species and hand-supplied
+tables, but for most organisms there's a better option: derive a real, organism-specific
+codon-usage (CAI) table or tRNA Adaptation Index (tAI) score directly from that organism's own
+NCBI genome assembly - no pre-existing table needed for arbitrarily many species, computed
+locally in a few seconds.
+
+```bash
+eso-optimize --input-folder path/to/fasta_files \
+    --derive-codon-usage-table-from-assembly GCF_000005845.2
+```
+
+```bash
+eso-optimize --input-folder path/to/fasta_files \
+    --derive-tai-score-from-assembly GCF_000005845.2 --tai-kingdom prokaryote
+```
+
+The accession (e.g. `GCF_000005845.2`, E. coli K-12 MG1655) is an NCBI RefSeq/GenBank assembly
+accession - find one for your organism at
+[ncbi.nlm.nih.gov/datasets/genome](https://www.ncbi.nlm.nih.gov/datasets/genome). This library
+does not (yet) resolve a bare species name or TaxID to its official assembly automatically -
+supply the accession directly.
+
+**CAI**: `--derive-codon-usage-table-from-assembly` fetches the genome and computes real Sharp &
+Li (1987) relative-adaptiveness weights from a reference set of the genome's own most strongly
+codon-biased genes (found via ENc - Effective Number of Codons - needing no functional
+annotation at all), not just a genome-wide average frequency. Same precedence slot as
+`--codon-usage-table-file` (the two are mutually exclusive).
+
+**tAI**: `--derive-tai-score-from-assembly` (with `--tai-kingdom {prokaryote,eukaryote}`,
+required) scores sequences by tRNA Adaptation Index instead of codon-usage-table CAI, grounded
+directly in the genome's own tRNA gene copy numbers rather than any reference gene set.
+`--tai-method` controls which of two real methods computes the underlying weights:
+
+- `generic` (fast, deterministic): dos Reis, Wernisch & Savva's (2004) own published formula
+  with its fixed generic wobble parameters - a faithful port verified against the method
+  authors' own R implementation.
+- `species-optimized` (slower - a couple of seconds - and stochastic): optimizes that same
+  formula's 5 free wobble parameters specifically for this organism, maximizing correlation
+  with the genome's own codon usage bias (RSCU) - reimplements the published gtAI method
+  (Anwar et al. 2023), the current best-performing version of this idea in the literature.
+- `auto` (default): try `species-optimized`, falling back to `generic` (with a warning
+  explaining why) if the organism's genome/tRNA data is too small or unusual to optimize
+  against meaningfully.
+
+Same precedence slot as `--custom-score-file` (mutually exclusive).
+
+From Python, both are available directly - fetch the genome once, then derive whichever table(s)
+you need from the same files:
+
+```python
+from eso.ncbi_genome import fetch_genome_package
+from eso.codon_usage import derive_table_from_genome, detect_genetic_code_num_from_gff
+from eso.tai import derive_tai_weights, build_tai_score_fn
+from eso.optimize import optimization_engine
+
+package = fetch_genome_package("GCF_000005845.2")
+genetic_code_num = detect_genetic_code_num_from_gff(package.gff_path)
+
+# CAI
+codon_usage_table = derive_table_from_genome(package.cds_fasta_path, genetic_code_num)
+final_seq, _, _ = optimization_engine(seq, codon_usage_table=codon_usage_table)
+
+# tAI (species-optimized, falling back to generic automatically)
+tai_weights = derive_tai_weights(
+    package.gff_path, kingdom="prokaryote", cds_fasta_path=package.cds_fasta_path,
+    genetic_code_num=genetic_code_num, genome_fasta_path=package.genome_fasta_path,
+)
+final_seq, _, _ = optimization_engine(seq, custom_score_fn=build_tai_score_fn(tai_weights))
+```
+
+A bad/withdrawn accession, a network problem, or a genome with no protein-coding/tRNA
+annotation all fail with a plain-English message rather than a raw traceback.
+
 ## Restricting ORF and exclusion regions per sequence
 
 By default, the entire sequence is treated as one in-frame, translation-preserving ORF

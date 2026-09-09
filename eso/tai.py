@@ -8,13 +8,33 @@ against the method authors' own R package
 (github.com/mariodosreis/tai/R/tAI.R -- get.ws()) in a sibling project's
 `compute_ecoli_tai_weights.py`. Ported here rather than reimplemented from
 the paper, to keep that verification meaningful.
+
+`derive_species_optimized_tai_weights`/`derive_tai_weights` add a second,
+optional way to get tAI weights: optimizing the same `get.ws()` formula's 5
+free wobble parameters per-organism (matching what stAIcalc/gtAI do), rather
+than using dos Reis' own fixed generic defaults. This reimplements the real
+gtAI (Anwar et al. 2023) algorithm directly - NOT a wrapper around the actual
+`gtAI` PyPI package, which was tried and abandoned after it crashed with a
+real KeyError on real archaeon data (its own wobble-key computation produces
+an invalid key for non-4-fold-degenerate codon families and looks it up with
+no default). Reimplemented here using pieces already verified elsewhere in
+this codebase: `eso.codon_usage._select_reference_codons` for the
+highly-expressed-gene reference set (identical recipe gtAI's own `ENc_calc`
+uses), and `_get_ws` itself (this module, already correct for every
+degeneracy class, unlike gtAI's `abs_Wi`) for scoring any candidate wobble
+parameter vector.
 """
 
 import math
 import re
+import warnings
+from collections import Counter
 
+import numpy as np
 from Bio import SeqIO
 from Bio.Data.CodonTable import unambiguous_dna_by_id
+from scipy.optimize import differential_evolution
+from scipy.stats import spearmanr
 
 _BASES = ('T', 'C', 'A', 'G')
 #: Standard genetic-code-table codon order: first base slowest, third base
@@ -237,3 +257,147 @@ def build_tai_score_fn(tai_weights):
         return math.exp(sum(log_weights) / len(log_weights))
 
     return score_fn
+
+
+def _rscu(reference_codons, aa_to_codons):
+    """Relative Synonymous Codon Usage: for each codon, its observed count
+    divided by the count expected if its amino acid's synonymous codons were
+    used uniformly (`count(aa) / degeneracy(aa)`) - the standard, textbook
+    formula (matches gtAI's own `CA_RSCU.RSCU`, verified directly against
+    that source rather than assumed from memory). `reference_codons`: a
+    flat list of codons (see `eso.codon_usage._select_reference_codons`) -
+    only counts matter, not original sequence order.
+    """
+    codon_counts = Counter(reference_codons)
+    rscu = {}
+    for degenerate_codons in aa_to_codons.values():
+        aa_count = sum(codon_counts.get(c, 0) for c in degenerate_codons)
+        if aa_count == 0:
+            continue
+        expected = aa_count / len(degenerate_codons)
+        for c in degenerate_codons:
+            rscu[c] = codon_counts.get(c, 0) / expected
+    return rscu
+
+
+def derive_species_optimized_tai_weights(cds_fasta_path, gff_path, kingdom, genetic_code_num=None,
+                                          genome_fasta_path=None, min_len_codons=100, top_perc=0.05,
+                                          min_gene_count=50, seed=0):
+    """Derive species-optimized tRNA Adaptation Index weights - reimplements
+    the real gtAI (Anwar et al. 2023) algorithm: instead of dos Reis' fixed
+    generic wobble parameters (`derive_tai_weights_from_gff`), optimize the
+    same formula's 5 free wobble parameters (`_get_ws`'s `s[4:9]`) to
+    maximize the Spearman correlation between the resulting per-codon tAI
+    weights and RSCU computed over this organism's own highly-expressed
+    reference genes (see module docstring for why this reimplements gtAI's
+    published method rather than wrapping the `gtAI` package itself, which
+    crashes on real data).
+
+    Reuses `eso.codon_usage._select_reference_codons` for the reference set
+    (the identical recipe gtAI's own `ENc_calc` uses, including this
+    codebase's own length-floor fix for the short-gene contamination gtAI's
+    unfixed version is equally exposed to) and this module's own `_get_ws`
+    for scoring each candidate wobble-parameter vector (correct for every
+    codon-degeneracy class, unlike gtAI's own `abs_Wi`).
+
+    `seed`: `differential_evolution`'s own RNG seed, for reproducible output
+    given the same inputs - this is a stochastic global optimizer, not a
+    deterministic calculation.
+
+    Returns
+    -------
+    dict of {codon: weight}, same shape as `derive_tai_weights_from_gff`.
+
+    Raises
+    ------
+    ValueError
+        If there aren't enough reference genes or tRNA genes to optimize
+        against meaningfully (too few genes/RSCU-Wi overlap for a Spearman
+        correlation to mean anything), or if the optimizer's result is
+        somehow non-finite - callers wanting an automatic fallback to the
+        generic weights on any such failure should use `derive_tai_weights`
+        instead of calling this directly.
+    """
+    from eso.codon_usage import CustomCodonTableFileError, _select_reference_codons, detect_genetic_code_num_from_gff
+
+    if kingdom not in _KINGDOM_TO_SKING:
+        raise ValueError(f"kingdom must be 'prokaryote' or 'eukaryote', got {kingdom!r}.")
+    if genetic_code_num is None:
+        genetic_code_num = detect_genetic_code_num_from_gff(gff_path)
+
+    try:
+        aa_to_codons, reference_codons = _select_reference_codons(
+            cds_fasta_path, genetic_code_num, min_len_codons, top_perc, min_gene_count)
+    except CustomCodonTableFileError as e:
+        raise ValueError(str(e)) from e
+
+    rscu = _rscu(reference_codons, aa_to_codons)
+    if len(rscu) < 10:
+        raise ValueError(
+            f"Only {len(rscu)} codons have a defined RSCU value from the reference gene set - "
+            "too few to meaningfully optimize wobble parameters against. Try a larger genome, "
+            "or use derive_tai_weights_from_gff's fixed generic weights instead."
+        )
+
+    genome_seqs = _load_genome_sequences(genome_fasta_path) if genome_fasta_path is not None else None
+    trna_counts = _parse_trna_gene_counts(gff_path, genome_seqs=genome_seqs)
+    if sum(trna_counts) == 0:
+        raise ValueError(
+            f"No tRNA gene features found in '{gff_path}' - tAI weights can't be derived "
+            "without real tRNA gene copy numbers."
+        )
+    sking = _KINGDOM_TO_SKING[kingdom]
+
+    def neg_fitness(x):
+        candidate_weights = _get_ws(trna_counts, sking, s=(0.0, 0.0, 0.0, 0.0, *x))
+        shared_codons = [c for c in candidate_weights if c in rscu]
+        rscu_values = [rscu[c] for c in shared_codons]
+        wi_values = [candidate_weights[c] for c in shared_codons]
+        corr, _ = spearmanr(rscu_values, wi_values)
+        return -corr if corr == corr else 0.0  # corr can be NaN if either side is constant
+
+    result = differential_evolution(neg_fitness, bounds=[(0.0, 1.0)] * 5, seed=seed, polish=True)
+    if not np.isfinite(result.fun):
+        raise ValueError(
+            "The wobble-parameter optimizer didn't converge to a usable result (non-finite "
+            "fitness) - this genome/tRNA gene set may be too small or unusual for species-"
+            "optimized tAI. Use derive_tai_weights_from_gff's fixed generic weights instead."
+        )
+
+    return _get_ws(trna_counts, sking, s=(0.0, 0.0, 0.0, 0.0, *(float(v) for v in result.x)))
+
+
+def derive_tai_weights(gff_path, kingdom, cds_fasta_path=None, genetic_code_num=None,
+                       genome_fasta_path=None, prefer_species_optimized=True, **selection_kwargs):
+    """Recommended entry point for tAI weights: tries species-optimized
+    weights first (`derive_species_optimized_tai_weights`, reimplementing
+    gtAI's real algorithm) when `cds_fasta_path` is given and
+    `prefer_species_optimized=True`, falling back to dos Reis' fixed
+    generic weights (`derive_tai_weights_from_gff`) on any failure there -
+    e.g. too few reference/tRNA genes, or the optimizer failing to converge
+    on an unusual/tiny genome. A warning explains the fallback when it
+    happens, matching `eso.optimize`'s own style for an unrecognized
+    organism.
+
+    `**selection_kwargs`: forwarded to `derive_species_optimized_tai_weights`
+    (`min_len_codons`, `top_perc`, `min_gene_count`, `seed`) - ignored if the
+    species-optimized path isn't attempted.
+
+    Returns
+    -------
+    dict of {codon: weight}, same shape as both underlying functions.
+    """
+    if cds_fasta_path is not None and prefer_species_optimized:
+        try:
+            return derive_species_optimized_tai_weights(
+                cds_fasta_path, gff_path, kingdom, genetic_code_num=genetic_code_num,
+                genome_fasta_path=genome_fasta_path, **selection_kwargs)
+        except Exception as e:
+            warnings.warn(
+                f"Species-optimized tAI weights couldn't be derived ({e!r}) - falling back to "
+                "dos Reis' fixed generic weights instead.",
+                stacklevel=2,
+            )
+
+    return derive_tai_weights_from_gff(
+        gff_path, kingdom, genetic_code_num=genetic_code_num, genome_fasta_path=genome_fasta_path)

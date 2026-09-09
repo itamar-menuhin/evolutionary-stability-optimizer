@@ -14,9 +14,11 @@ import os
 
 import pytest
 
+import time
+
 from eso.codon_usage import derive_table_from_genome, detect_genetic_code_num_from_gff
 from eso.ncbi_genome import fetch_genome_package
-from eso.tai import derive_tai_weights_from_gff
+from eso.tai import derive_species_optimized_tai_weights, derive_tai_weights_from_gff
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("ESO_RUN_NETWORK_TESTS"),
@@ -40,3 +42,22 @@ def test_fetch_derive_cai_and_tai_end_to_end_for_a_real_archaeon(tmp_path):
         genome_fasta_path=package.genome_fasta_path)
     assert len(tai_weights) == 60
     assert all(0.0 < w <= 1.0 for w in tai_weights.values())
+
+
+def test_species_optimized_tai_end_to_end_for_a_real_archaeon(tmp_path):
+    # Slower (real differential_evolution run, ~1-2s measured this session)
+    # and stochastic (a real global optimizer, not a deterministic
+    # calculation) - kept in this same opt-in, network-gated file rather
+    # than a separate gate, since it already needs the same real fetch.
+    package = fetch_genome_package(_ARCHAEON_ACCESSION, dest_dir=tmp_path)
+    genetic_code_num = detect_genetic_code_num_from_gff(package.gff_path)
+
+    t0 = time.time()
+    weights = derive_species_optimized_tai_weights(
+        package.cds_fasta_path, package.gff_path, kingdom="prokaryote",
+        genetic_code_num=genetic_code_num, genome_fasta_path=package.genome_fasta_path, seed=0)
+    elapsed = time.time() - t0
+    print(f"\nspecies-optimized tAI for {_ARCHAEON_ACCESSION}: {elapsed:.2f}s")
+
+    assert len(weights) == 60
+    assert all(0.0 < w <= 1.0 for w in weights.values())
