@@ -97,3 +97,29 @@ def test_recombination_score_matches_efm_calculator_reference():
         * (site_length / (1 + 1465.6 * site_length))
     )
     assert row.log10_prob_recombination_ecoli == pytest.approx(reference, abs=1e-6)
+
+
+def test_homopolymer_still_yields_a_real_recombination_pair():
+    # Regression test for a real bug introduced (and caught before shipping)
+    # while replacing this module's CountVectorizer+re.finditer
+    # implementation with a plain dict scan (removing eso's only
+    # scikit-learn dependency): re.finditer's position lookup is
+    # NON-overlapping (jumps past each match), which for a long homopolymer
+    # produces a sparse position list the "merge back-to-back matches" step
+    # leaves as two separate, pairable sites. A naive fully-overlapping
+    # position scan instead produces a dense, consecutive-by-1 position
+    # list that the same merge step collapses into a single, un-pairable
+    # site - silently losing the detection entirely (confirmed directly:
+    # this exact input returned an empty dataframe before the fix).
+    seq = "A" * 40
+    df = find_recombination_sites(seq)
+    assert not df.empty
+
+
+def test_tandem_repeat_still_yields_a_real_recombination_pair():
+    # Same underlying risk as test_homopolymer_still_yields_a_real_recombination_pair
+    # above, for a multi-nucleotide periodic repeat (not just a single-base
+    # homopolymer) long enough to span multiple 16-mer windows.
+    seq = "AT" * 30
+    df = find_recombination_sites(seq)
+    assert not df.empty

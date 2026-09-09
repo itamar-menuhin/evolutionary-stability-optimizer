@@ -21,17 +21,70 @@ these are two independently-arrived-at implementations of the same EFM
 Calculator concept and haven't yet been reconciled into one canonical API.
 """
 
-import re
-
 import numpy as np
 import pandas as pd
-from sklearn.feature_extraction.text import CountVectorizer
 
 from eso.detection._overlap import collapse_overlapping_intervals, collapse_overlapping_intervals_no_coverage_loss
+
+#: window length the EFM-Calculator-style recombination formula below is
+#: calibrated for - see calc_recombination_score's docstring in
+#: eso.detection.recombination for the full citation.
+_KMER_LENGTH = 16
 
 
 def genome_cutter(start, end, seq):
     return seq[start:end]
+
+
+def _repeated_kmer_positions(seq, k):
+    """For every k-mer content that occurs at 2+ positions (checked via full
+    sliding-window overlap - matching sklearn's CountVectorizer's own
+    counting semantics, which this replaces), returns its NON-overlapping
+    occurrence positions only (each kept position is >= k past the
+    previous one) - matching re.finditer's search semantics, which is what
+    actually located each one's positions in this module's previous
+    implementation.
+
+    Replaces sklearn's CountVectorizer(analyzer='char_wb',
+    ngram_range=(16,16)) (to count distinct-16-mer occurrences) +
+    re.finditer (to re-locate each one's positions) with a single O(n)
+    dict pass - eso's only use of scikit-learn anywhere in the codebase,
+    pulled in for what's fundamentally a counting task the standard
+    library already does in one pass (the same dict/position-list pattern
+    eso.detection.slippage's _find_relevant_subunits_len_l already uses).
+
+    The two-step (overlapping count, non-overlapping re-locate) split is
+    kept deliberately, not "fixed" into one consistent overlap semantics -
+    confirmed directly that using fully-overlapping positions throughout
+    (the seemingly more consistent choice) changes real output: a long
+    homopolymer or tandem repeat, scanned with full overlap, produces a
+    dense run of consecutive-by-1 positions that the "merge back-to-back
+    16-mer matches" step below (designed for a same-repeat-extended-past-16nt
+    case) collapses into a single un-pairable site, losing the detection
+    entirely - whereas the actual (if inconsistent-looking) original
+    behavior's sparser, non-overlapping position list produces multiple
+    separate, correctly-paired sites for exactly that case. Reproducing
+    re.finditer's non-overlapping search from the already-known overlapping
+    position list (greedy: keep a position only if it starts at or past
+    the previous kept position + k) avoids a second full scan while still
+    matching that observed behavior exactly.
+    """
+    positions_by_kmer = {}
+    for i in range(len(seq) - k + 1):
+        positions_by_kmer.setdefault(seq[i:i + k], []).append(i)
+
+    result = {}
+    for kmer, positions in positions_by_kmer.items():
+        if len(positions) < 2:
+            continue
+        non_overlapping = []
+        next_allowed = -1
+        for position in positions:
+            if position >= next_allowed:
+                non_overlapping.append(position)
+                next_allowed = position + k
+        result[kmer] = non_overlapping
+    return result
 
 
 def find_recombination_candidates(seq):
@@ -45,24 +98,19 @@ def find_recombination_candidates(seq):
     pair of names across both detector implementations - see
     eso.detection.dispatch.
     """
-    vectorizer = CountVectorizer(analyzer='char_wb', ngram_range=(16, 16))
-    counter = vectorizer.fit_transform([seq]).toarray()
-
-    sites_recombination = list(np.where(counter > 1)[1])
     empty_columns = [
         'start_1', 'end_1', 'sequence', 'start_2', 'end_2',
         'location_delta', 'site_length', 'log10_prob_recombination_ecoli', 'sequence_number',
     ]
-    if not sites_recombination:
+    repeated = _repeated_kmer_positions(seq, _KMER_LENGTH)
+    if not repeated:
         return pd.DataFrame(columns=empty_columns)
 
-    all_sites = vectorizer.get_feature_names_out()
-
-    suspect_recombination = []
-    for site in sites_recombination:
-        curr_seq = all_sites[site]
-        list_regions = [match.span() for match in re.finditer(curr_seq.upper(), seq)]
-        suspect_recombination.extend(list_regions)
+    suspect_recombination = [
+        (position, position + _KMER_LENGTH)
+        for positions in repeated.values()
+        for position in positions
+    ]
 
     suspect_recombination = sorted(suspect_recombination)
     df_recombination = pd.DataFrame(suspect_recombination, columns=['start', 'end'])

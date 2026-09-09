@@ -34,7 +34,6 @@ python = "^3.11"
 biopython = "^1.87"
 numpy = ">=1.26,<3.0"
 pandas = "^3.0.3"
-scikit-learn = "^1.9.0.0"
 dnachisel = "^3.2.16"
 rapidfuzz = ">=3.0,<4.0"
 
