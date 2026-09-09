@@ -396,19 +396,26 @@ locally in a few seconds.
 
 ```bash
 eso-optimize --input-folder path/to/fasta_files \
-    --derive-codon-usage-table-from-assembly GCF_000005845.2
+    --derive-codon-usage-table-from-assembly "Escherichia coli"
 ```
 
 ```bash
 eso-optimize --input-folder path/to/fasta_files \
-    --derive-tai-score-from-assembly GCF_000005845.2 --tai-kingdom prokaryote
+    --derive-tai-score-from-assembly 562 --tai-kingdom prokaryote
 ```
 
-The accession (e.g. `GCF_000005845.2`, E. coli K-12 MG1655) is an NCBI RefSeq/GenBank assembly
-accession - find one for your organism at
-[ncbi.nlm.nih.gov/datasets/genome](https://www.ncbi.nlm.nih.gov/datasets/genome). This library
-does not (yet) resolve a bare species name or TaxID to its official assembly automatically -
-supply the accession directly.
+Both flags accept either a bare species name (`"Escherichia coli"`), an NCBI TaxID (`562`), or
+an explicit assembly accession (`GCF_000005845.2`) - find an accession for your organism at
+[ncbi.nlm.nih.gov/datasets/genome](https://www.ncbi.nlm.nih.gov/datasets/genome) if you'd rather
+pass one directly (e.g. to pick a specific strain). A name/TaxID is resolved to its official
+("reference genome") NCBI assembly automatically - if it matches more than one *species* (a bare
+genus name, for instance, e.g. `"Xanthomonas"`), resolution fails with a list of the matching
+species and asks for a more specific name; if it matches more than one official assembly of the
+*same* species (rare, but real - E. coli itself has two, for K-12 MG1655 and O157:H7 Sakai), it
+picks the lower accession and warns, naming the other(s) - pass a specific accession, or a full
+strain name (e.g. `"Escherichia coli str. K-12 substr. MG1655"`), if you need a particular one.
+An organism with no NCBI-designated official assembly at all (not uncommon for less-studied
+species) fails clearly too - find and pass an explicit accession yourself in that case.
 
 **CAI**: `--derive-codon-usage-table-from-assembly` fetches the genome and computes real Sharp &
 Li (1987) relative-adaptiveness weights from a reference set of the genome's own most strongly
@@ -438,12 +445,15 @@ From Python, both are available directly - fetch the genome once, then derive wh
 you need from the same files:
 
 ```python
-from eso.ncbi_genome import fetch_genome_package
+from eso.ncbi_genome import fetch_genome_package_for
 from eso.codon_usage import derive_table_from_genome, detect_genetic_code_num_from_gff
 from eso.tai import derive_tai_weights, build_tai_score_fn
 from eso.optimize import optimization_engine
 
-package = fetch_genome_package("GCF_000005845.2")
+# fetch_genome_package_for accepts a name, TaxID, or explicit accession alike;
+# eso.ncbi_genome.fetch_genome_package (accession-only) and
+# resolve_assembly_accession (name/TaxID-only) are also available separately.
+package = fetch_genome_package_for("Escherichia coli")
 genetic_code_num = detect_genetic_code_num_from_gff(package.gff_path)
 
 # CAI
