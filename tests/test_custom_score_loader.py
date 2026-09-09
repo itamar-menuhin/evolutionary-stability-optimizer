@@ -62,3 +62,19 @@ def test_score_function_returning_non_number_gives_friendly_message(tmp_path):
     file_path = _write(tmp_path, "wrong_type.py", "def score(seq):\n    return 'not a number'\n")
     with pytest.raises(CustomScoreFileError, match="instead of a number"):
         load_custom_score_from_file(file_path)
+
+
+def test_score_function_returning_a_numpy_number_is_accepted(tmp_path):
+    # Regression test for a real, plausible false-rejection: a custom score
+    # function built on numpy/pandas (as most real bioinformatics scoring
+    # code is) very commonly returns np.int64/np.float32 rather than a
+    # builtin int/float - confirmed directly that np.int64 isn't an
+    # `isinstance(..., (int, float))` match at all, so this used to eagerly
+    # reject a completely working scoring function with a confusing
+    # "isn't a number" message.
+    file_path = _write(
+        tmp_path, "numpy_score.py",
+        "import numpy as np\ndef score(seq):\n    return np.int64(seq.count('G'))\n",
+    )
+    score_fn = load_custom_score_from_file(file_path)
+    assert score_fn("GGG") == 3

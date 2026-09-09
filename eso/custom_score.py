@@ -4,6 +4,7 @@ objective.
 """
 
 import importlib.util
+import numbers
 import warnings
 from os import path
 
@@ -160,7 +161,15 @@ def load_custom_score_from_file(file_path, function_name='score'):
             f"'{file_path}' and try again."
         ) from e
 
-    if not isinstance(result, (int, float)):
+    # numbers.Real, not the narrower (int, float): confirmed directly that a
+    # perfectly valid, common return type - numpy's own np.int64/np.float32,
+    # what a real custom score function built on numpy/pandas (as most real
+    # bioinformatics scoring code is) very plausibly returns - is neither an
+    # `int` nor a `float` by isinstance's own strict-subclass check (np.int64
+    # isn't a Python int at all), even though it works fine everywhere
+    # downstream. That would have eagerly rejected a completely working
+    # scoring function with a confusing "isn't a number" message.
+    if not isinstance(result, numbers.Real):
         raise CustomScoreFileError(
             f"Your `{function_name}` function returned a {type(result).__name__} "
             f"({result!r}) instead of a number, when tested on '{_VALIDATION_TEST_SEQUENCE}'. "
