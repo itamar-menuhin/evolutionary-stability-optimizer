@@ -3,7 +3,6 @@
 import argparse
 import logging
 import sys
-import warnings
 
 import numpy as np
 
@@ -157,6 +156,22 @@ def main(argv=None):
         print("--derive-tai-score-from-assembly requires --tai-kingdom (prokaryote or eukaryote).",
               file=sys.stderr)
         return 1
+    # optimize.py ignores codon_usage_table entirely whenever custom_score_fn
+    # is also given (see eso.optimize._codon_optimization_objectives's own
+    # docstring) - a codon-usage-table source together with a custom-score
+    # source is exactly as much "two ways to specify the same conceptual
+    # slot" as the two mutual-exclusivity checks above, so it's rejected the
+    # same hard way, before either side's (possibly network-fetching)
+    # derivation runs at all, rather than only warned about after both had
+    # already been computed (and the codon-usage side's real work thrown
+    # away) - a real, previously-silent waste, confirmed directly.
+    if (args.codon_usage_table_file is not None or args.derive_codon_usage_table_from_assembly is not None) \
+            and (args.custom_score_file is not None or args.derive_tai_score_from_assembly is not None):
+        print("A codon-usage table (--codon-usage-table-file/--derive-codon-usage-table-from-assembly) "
+              "and a custom score (--custom-score-file/--derive-tai-score-from-assembly) can't both be "
+              "given - the custom score would silently override the codon-usage table entirely. Pick one.",
+              file=sys.stderr)
+        return 1
     # Confirmed real, previously-silent gap: --common-motifs' own help text
     # already documented this requirement ("At least one of --motifs-path/
     # --common-motifs is required with --compute-motifs"), but nothing
@@ -214,27 +229,6 @@ def main(argv=None):
         except (GenomeFetchError, CustomCodonTableFileError, ValueError) as e:
             print(str(e), file=sys.stderr)
             return 1
-
-    # Confirmed real, silent waste: optimization_engine ignores
-    # codon_usage_table entirely whenever custom_score_fn is given (see
-    # eso.optimize._codon_optimization_objectives's own docstring) - a
-    # user deriving BOTH a CAI table (--codon-usage-table-file/
-    # --derive-codon-usage-table-from-assembly) AND a custom score
-    # (--custom-score-file/--derive-tai-score-from-assembly) would have the
-    # former's real network fetch and CPU work (ENc over potentially
-    # thousands of genes) thrown away with no indication at all. A warning,
-    # not a hard error - this is a documented, intentional precedence rule,
-    # not a forbidden combination, so a use case that genuinely wants this
-    # (e.g. scripting both flags generically and letting precedence sort it
-    # out) shouldn't be blocked outright.
-    if codon_usage_table is not None and custom_score_fn is not None:
-        warnings.warn(
-            "Both a codon-usage table (--codon-usage-table-file/"
-            "--derive-codon-usage-table-from-assembly) and a custom score "
-            "(--custom-score-file/--derive-tai-score-from-assembly) were given - the codon-usage "
-            "table will be ignored entirely; only the custom score is used for codon optimization.",
-            stacklevel=2,
-        )
 
     indexes = None
     if args.indexes_file is not None:

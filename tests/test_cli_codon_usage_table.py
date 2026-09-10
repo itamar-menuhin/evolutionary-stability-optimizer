@@ -4,8 +4,6 @@ pipeline run), and a good file's table must reach eso.pipeline.main
 unchanged.
 """
 
-import pytest
-
 import eso.cli as cli
 
 
@@ -41,21 +39,41 @@ def test_good_codon_usage_table_file_reaches_pipeline_main(tmp_path, monkeypatch
     assert captured['codon_usage_table']['A'] == {'GCT': 0.5, 'GCC': 0.5}
 
 
-def test_codon_usage_table_together_with_custom_score_warns_it_will_be_ignored(tmp_path, monkeypatch):
-    # Regression test for a real, silent-waste gap: optimize.py ignores
-    # codon_usage_table entirely whenever custom_score_fn is also given (see
-    # eso.optimize._codon_optimization_objectives) - a user deriving BOTH
-    # used to get no indication the codon-usage table's real fetch/CPU work
-    # was thrown away. Confirmed directly before this fix.
+def test_codon_usage_table_together_with_custom_score_is_rejected(tmp_path, monkeypatch, capsys):
+    # Regression test for a real gap, upgraded from a warning to a hard
+    # error (matching this CLI's other mutual-exclusivity checks, e.g.
+    # --codon-usage-table-file + --derive-codon-usage-table-from-assembly):
+    # optimize.py ignores codon_usage_table entirely whenever custom_score_fn
+    # is also given (see eso.optimize._codon_optimization_objectives) - a
+    # warning alone still let a user waste a real network fetch/CPU work
+    # deriving a codon-usage table that would then be silently discarded.
+    # Now rejected upfront, before either side's derivation runs at all.
     table_path = _write(tmp_path, "good.csv", 'codon,aa,freq_within_aa\nGCT,A,0.5\nGCC,A,0.5\n')
     score_path = _write(tmp_path, "score.py", "def score(seq):\n    return len(seq)\n")
 
     monkeypatch.setattr(cli, 'run_pipeline', lambda **kwargs: ('Success!', []))
 
-    with pytest.warns(UserWarning, match="codon-usage table will be ignored"):
-        exit_code = cli.main(['--codon-usage-table-file', table_path, '--custom-score-file', score_path])
+    exit_code = cli.main(['--codon-usage-table-file', table_path, '--custom-score-file', score_path])
 
-    assert exit_code == 0
+    assert exit_code == 1
+    assert "can't both be given" in capsys.readouterr().err
+
+
+def test_codon_usage_table_conflict_is_rejected_before_any_network_fetch(monkeypatch, capsys):
+    # Same rejection, via the --derive-*-from-assembly flags - must fail
+    # before attempting either network fetch, not just before pipeline.main.
+    def _unexpected_fetch(*args, **kwargs):
+        raise AssertionError("should not fetch anything - rejected before either derivation runs")
+
+    monkeypatch.setattr(cli, 'fetch_genome_package_for', _unexpected_fetch)
+
+    exit_code = cli.main([
+        '--derive-codon-usage-table-from-assembly', 'GCF_000005845.2',
+        '--derive-tai-score-from-assembly', 'GCF_000005845.2', '--tai-kingdom', 'prokaryote',
+    ])
+
+    assert exit_code == 1
+    assert "can't both be given" in capsys.readouterr().err
 
 
 def test_no_codon_usage_table_file_leaves_it_none(monkeypatch):
