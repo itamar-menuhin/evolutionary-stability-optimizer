@@ -472,6 +472,57 @@ def test_gc_content_shrink_pass_restores_a_constraint_that_turned_out_unnecessar
     assert dropped == [b_constraint]
 
 
+def test_shrink_pass_is_skipped_above_the_verification_cap(monkeypatch):
+    # Restoring each dropped constraint costs one full resolve_constraints()
+    # call, and that compounds with the retry loop's own already-quadratic
+    # worst case for a genuinely dense conflict (benchmarked directly: a
+    # near-0%-GC poly-T stress sequence with ~475 dropped constraints took
+    # ~180s with unconditional shrink verification). Above
+    # _SHRINK_VERIFICATION_CAP, the shrink pass must be skipped entirely -
+    # every dropped constraint stays dropped and warned about, with zero
+    # _try_restore calls, exactly like before the shrink pass existed.
+    from eso.optimize import _SHRINK_VERIFICATION_CAP
+
+    seq = "ATG" + "AAA" * 5 + "TAA"
+    constraints = []
+    for i in range(_SHRINK_VERIFICATION_CAP + 5):
+        c = dnachisel.AvoidPattern("GATC")
+        c.eso_severity = float(i)
+        constraints.append(c)
+
+    class _FakeFailingEvaluation:
+        passes = False
+
+    monkeypatch.setattr(dnachisel.AvoidPattern, "evaluate", lambda self, problem: _FakeFailingEvaluation())
+
+    def fake_resolve_constraints(self, *args, **kwargs):
+        # Resolved only once every AvoidPattern is gone - none of them
+        # matters individually here, only the total count relative to the cap.
+        if any(isinstance(c, dnachisel.AvoidPattern) for c in self.constraints):
+            raise NoSolutionError("simulated ambiguous failure", problem=self, constraint=None)
+
+    monkeypatch.setattr(dnachisel.DnaOptimizationProblem, "resolve_constraints", fake_resolve_constraints)
+    monkeypatch.setattr("eso.optimize.convert_df_to_constraints", lambda df: constraints)
+
+    restore_calls = []
+    monkeypatch.setattr(
+        "eso.optimize._try_restore",
+        lambda cnst, constraint, obj, seq: restore_calls.append(constraint) or None,
+    )
+    dropped = []
+    monkeypatch.setattr("eso.optimize._warn_dropped_constraint", lambda c: dropped.append(c))
+
+    df_slippage = pd.DataFrame([{
+        "start": 3, "end": 6, "length_base_unit": 3, "sequence": "AAA",
+        "num_base_units": 2, "log10_prob_slippage_ecoli": -1.0,
+    }])
+
+    optimization_engine(seq, mini_gc=0.3, maxi_gc=0.7, df_slippage=df_slippage, organism_name="not_specified")
+
+    assert len(dropped) == _SHRINK_VERIFICATION_CAP + 5
+    assert restore_calls == []
+
+
 def test_enforce_gc_content_is_never_silently_dropped_when_no_alternative_helps(monkeypatch):
     # The narrower, still-real gap this whole fix is ultimately about: if
     # dropping every other, less-critical constraint still can't rescue

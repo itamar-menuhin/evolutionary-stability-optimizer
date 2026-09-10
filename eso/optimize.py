@@ -66,6 +66,25 @@ _LOCALIZED_NONE_CRASH_MESSAGE = "'NoneType' object has no attribute 'evaluate'"
 #: just theoretical, and it burns through the retry budget for no benefit.
 _PROTECTED_CONSTRAINT_TYPES = (dnachisel.EnforceGCContent,)
 
+#: Above this many dropped constraints, the shrink/verify pass (see the end
+#: of the retry loop below) is skipped entirely, falling back to trusting
+#: the greedy drop order as final - the same behavior this verification was
+#: added on top of. Restoring each dropped constraint costs one full
+#: resolve_constraints() call, and that cost compounds with the retry
+#: loop's own already-quadratic worst case (many rounds, each re-evaluating
+#: every remaining constraint, when a protected constraint like
+#: EnforceGCContent stays implicated for a long stretch): benchmarked
+#: directly on a synthetic near-0%-GC poly-T stress sequence, going from
+#: ~125 to ~250 dropped constraints raised total runtime from ~10s to ~45s,
+#: and ~250 to ~475 reached ~180s - a real, compounding cost, not a flat
+#: overhead, that a genuinely dense conflict can hit in practice. Below this
+#: cap, minimality is verified directly rather than just aimed for by the
+#: greedy order; above it, correctness rigor is deliberately traded for
+#: practical runtime - some risk of an unnecessarily-dropped low-severity
+#: constraint remains in that regime, same as before this verification
+#: existed at all.
+_SHRINK_VERIFICATION_CAP = 100
+
 
 def _constraints_to_drop(cnst, problem):
     """Decide which constraint(s) in `cnst` to drop to make progress on a
@@ -459,18 +478,25 @@ def optimization_engine(
     # ended up dropped too, it was never actually necessary on its own. This
     # is exactly the "only remove what actually helps resolve the clash"
     # guarantee that matters, not just an ordering preference - so it's
-    # verified directly here, not just aimed for during the walk above. Try
-    # restoring each dropped constraint, most severe (most worth keeping)
-    # first; whatever restores cleanly (a single resolve_constraints() with
-    # it added back - see _try_restore) stays restored, and only a
-    # constraint that genuinely still breaks the resolution when restored is
-    # left dropped and warned about.
-    for constraint in sorted(dropped, key=lambda c: getattr(c, 'eso_severity', float('inf')), reverse=True):
-        restored_problem = _try_restore(cnst, constraint, obj, seq)
-        if restored_problem is not None:
-            cnst.append(constraint)
-            problem = restored_problem
-        else:
+    # verified directly here, not just aimed for during the walk above,
+    # UNLESS there are too many dropped constraints to make that practical
+    # (see _SHRINK_VERIFICATION_CAP - a real, compounding runtime cost on a
+    # genuinely dense conflict, not just a flat overhead).
+    if len(dropped) <= _SHRINK_VERIFICATION_CAP:
+        # Try restoring each dropped constraint, most severe (most worth
+        # keeping) first; whatever restores cleanly (a single
+        # resolve_constraints() with it added back - see _try_restore) stays
+        # restored, and only a constraint that genuinely still breaks the
+        # resolution when restored is left dropped and warned about.
+        for constraint in sorted(dropped, key=lambda c: getattr(c, 'eso_severity', float('inf')), reverse=True):
+            restored_problem = _try_restore(cnst, constraint, obj, seq)
+            if restored_problem is not None:
+                cnst.append(constraint)
+                problem = restored_problem
+            else:
+                _warn_dropped_constraint(constraint)
+    else:
+        for constraint in dropped:
             _warn_dropped_constraint(constraint)
 
     problem.optimize()
