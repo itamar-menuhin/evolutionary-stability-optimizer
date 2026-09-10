@@ -100,19 +100,55 @@ def test_genetic_code_num_is_required():
         derive_table_from_genome("irrelevant.fna", genetic_code_num=None)
 
 
-def test_genetic_code_with_a_different_degeneracy_structure_is_rejected(tmp_path):
+def test_genetic_code_with_a_different_degeneracy_structure_still_works_correctly(tmp_path):
     # Regression test for a real gap, confirmed directly (not assumed): the
-    # ENc formula _calc_enc uses has fixed coefficients (2, 9, 1, 5, 3) that
+    # ENc formula _calc_enc uses had fixed coefficients (2, 9, 1, 5, 3) that
     # are the standard genetic code's own count of amino-acid families at
     # each degeneracy level - true for tables 1 and 11, but genuinely
     # different for every other NCBI genetic code table (e.g. table 2,
     # vertebrate mitochondrial, has no 3-fold-degenerate amino acid at all -
-    # AGA/AGG are stop codons there, not Arg). Using a mismatched table
-    # wouldn't crash on its own - it would silently compute a meaningless
-    # ENc value - so this must be caught explicitly instead.
-    fasta = _write_fasta(tmp_path, [("gene", _biased_gene(60))])
-    with pytest.raises(CustomCodonTableFileError, match="degeneracy structure"):
-        derive_table_from_genome(fasta, genetic_code_num=2)
+    # AGA/AGG are stop codons there, not Arg; ATA is Met, not Ile). Fixed by
+    # computing those coefficients directly from whichever genetic code is
+    # actually given (_degeneracy_family_counts), rather than assuming the
+    # standard code's own numbers or rejecting anything else outright.
+    # Table 2's reassignments don't touch Lys/Glu's own codons, so the same
+    # biased-vs-unbiased fixture used for the standard code (table 11)
+    # elsewhere in this file still exercises the real selection logic here.
+    fasta = _write_fasta(tmp_path, [
+        ("biased", _biased_gene(60)),
+        ("unbiased", _unbiased_gene(60)),
+    ])
+    table = derive_table_from_genome(
+        fasta, genetic_code_num=2,  # vertebrate mitochondrial
+        min_len_codons=100, top_perc=0.5, min_gene_count=1,
+    )
+    assert table['K'] == {'AAA': 1.0, 'AAG': 0.0}
+    assert table['E'] == {'GAA': 1.0, 'GAG': 0.0}
+
+
+def test_calc_enc_matches_the_standard_formula_for_the_standard_genetic_code(tmp_path):
+    # Direct check that the generalized, any-genetic-code formula
+    # (_degeneracy_family_counts + _calc_enc) reproduces the exact original
+    # hardcoded standard-code formula (2 + 9/d2 + 1/d3 + 5/d4 + 3/d6) for
+    # tables 1/11 - not just "doesn't crash", the actual number.
+    from Bio.Data.CodonTable import unambiguous_dna_by_id
+    from collections import defaultdict
+    from eso.codon_usage import _calc_enc, _degeneracy_family_counts
+
+    aa_to_codons = defaultdict(list)
+    for codon, aa in unambiguous_dna_by_id[11].forward_table.items():
+        aa_to_codons[aa].append(codon)
+    degeneracy_family_counts = _degeneracy_family_counts(aa_to_codons)
+    assert degeneracy_family_counts == {1: 2, 2: 9, 3: 1, 4: 5, 6: 3}
+
+    codons = (["AAA"] * 8 + ["AAG"] * 2       # Lys, 2-fold, biased
+              + ["ATA"] * 5 + ["ATC"] * 3 + ["ATT"] * 2)  # Ile, 3-fold
+
+    d2_group = (8 / 10) ** 2 + (2 / 10) ** 2
+    d3_group = (5 / 10) ** 2 + (3 / 10) ** 2 + (2 / 10) ** 2
+    expected = 2 + 9 / d2_group + 1 / d3_group + 5 / (1 / 4) + 3 / (1 / 6)
+
+    assert _calc_enc(codons, aa_to_codons, degeneracy_family_counts) == pytest.approx(expected)
 
 
 def test_stop_codon_default_is_present_when_not_derivable_from_the_reference_set(tmp_path):

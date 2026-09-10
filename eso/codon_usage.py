@@ -258,46 +258,44 @@ def detect_genetic_code_num_from_gff(gff_path):
     return votes.most_common(1)[0][0]
 
 
-#: The Wright 1990 ENc formula's own fixed coefficients (the 2, 9, 1, 5, 3 in
-#: _calc_enc's final expression) aren't free parameters - they ARE the
-#: standard genetic code's own count of amino-acid families at each
-#: degeneracy level (1-fold: Met+Trp=2; 2-fold: 9 families; 3-fold: Ile
-#: alone=1; 4-fold: 5 families; 6-fold: Leu+Arg+Ser=3). Confirmed directly
-#: (checked every NCBI genetic code table Biopython bundles, not assumed)
-#: that this exact family-count structure holds only for table 1 (standard)
-#: and table 11 (bacterial/archaeal/plant-plastid) - the two genuinely
-#: supported by this module - and genuinely differs for every one of the
-#: other 25 tables (e.g. table 2, vertebrate mitochondrial, has no 3-fold
-#: class at all: AGA/AGG are stop codons there, not Arg). Using this formula
-#: with a mismatched genetic code wouldn't crash - _calc_enc's own fallback
-#: (1/degree) for an empty degeneracy class silently absorbs the gap - it
-#: would silently compute a scientifically meaningless ENc value, biasing
-#: the entire reference-gene selection this table/weight derivation depends
-#: on, with no error or warning at all.
-_ENC_FORMULA_DEGENERACY_COUNTS = {1: 2, 2: 9, 3: 1, 4: 5, 6: 3}
+def _degeneracy_family_counts(aa_to_codons):
+    """{degeneracy: number of amino-acid families with that many synonymous
+    codons} for a genetic code's own aa_to_codons - e.g. {1: 2, 2: 9, 3: 1,
+    4: 5, 6: 3} for the standard genetic code (tables 1/11): 2 one-codon
+    families (Met, Trp), 9 twofold-degenerate families, and so on. This IS
+    the set of coefficients Wright's (1990) ENc formula needs (see
+    `_calc_enc`) - previously hardcoded as those exact standard-code numbers,
+    which silently produced a meaningless result for every OTHER genetic
+    code table (confirmed directly: checked every NCBI genetic code table
+    Biopython bundles - e.g. table 2, vertebrate mitochondrial, has no
+    3-fold-degenerate amino acid at all, AGA/AGG being stop codons there,
+    not Arg). Computing this directly from whichever genetic code was
+    actually given makes the formula correct for any of them, not just the
+    two that happen to match the standard structure.
+    """
+    return dict(Counter(len(codons) for codons in aa_to_codons.values()))
 
 
-def _validate_enc_formula_applies(aa_to_codons, genetic_code_num):
-    degeneracy_counts = dict(Counter(len(codons) for codons in aa_to_codons.values()))
-    if degeneracy_counts != _ENC_FORMULA_DEGENERACY_COUNTS:
-        raise CustomCodonTableFileError(
-            f"genetic_code_num={genetic_code_num} has a different codon-degeneracy structure than "
-            "the standard genetic code (tables 1 and 11) - the ENc (Effective Number of Codons) "
-            "formula this reference-gene selection relies on is calibrated specifically for that "
-            "structure and would silently compute a meaningless result here, not raise an error on "
-            "its own. derive_table_from_genome and derive_species_optimized_tai_weights currently "
-            "only support genetic_code_num 1 or 11."
-        )
-
-
-def _calc_enc(codons, aa_to_codons):
+def _calc_enc(codons, aa_to_codons, degeneracy_family_counts):
     """Effective Number of Codons (Wright 1990) - a purely sequence-intrinsic
     measure of codon bias needing no external annotation at all. Lower means
     more strongly biased; genuinely highly-expressed genes are, empirically,
     disproportionately the most strongly biased ones. Ported from STABLES'
     own `create_he.py` (identical across all 8 of its host organisms), which
     uses exactly this formula to select its own highly-expressed-gene proxy
-    set for CAI/RCA weighting."""
+    set for CAI/RCA weighting - generalized here from that port's
+    standard-genetic-code-only coefficients (2, 9, 1, 5, 3) to
+    `degeneracy_family_counts` (see `_degeneracy_family_counts`), the same
+    quantity computed directly from whichever genetic code is actually in
+    use, so this is correct for any of them. Reproduces the exact original
+    formula for the standard code (tables 1/11): a 1-fold-degenerate amino
+    acid's own homozygosity is always exactly 1 (its one codon is used 100%
+    of the time whenever the amino acid is observed at all, having no
+    synonymous alternative), so its family count divided by that always
+    equals the family count itself - `n1 / 1 = n1 = 2` - exactly Wright's
+    own leading "2" term for the standard code's 2 one-codon families
+    (Met, Trp).
+    """
     degeneracy_groups = defaultdict(list)
     for aa, degenerate_codons in aa_to_codons.items():
         counts = Counter(c for c in codons if c in degenerate_codons)
@@ -305,12 +303,12 @@ def _calc_enc(codons, aa_to_codons):
             freqs = sum((n / sum(counts.values())) ** 2 for n in counts.values())
             degeneracy_groups[len(degenerate_codons)].append(freqs)
 
-    d_vec = {}
-    for degree in (1, 2, 3, 4, 6):
+    enc = 0.0
+    for degree, family_count in degeneracy_family_counts.items():
         group = degeneracy_groups.get(degree, [])
-        d_vec[degree] = (1 / degree) if not group else float(np.average(group))
-
-    return 2 + 9 / d_vec[2] + 1 / d_vec[3] + 5 / d_vec[4] + 3 / d_vec[6]
+        d_value = (1 / degree) if not group else float(np.average(group))
+        enc += family_count / d_value
+    return enc
 
 
 def _select_reference_codons(cds_fasta_path, genetic_code_num, min_len_codons, top_perc, min_gene_count):
@@ -337,7 +335,7 @@ def _select_reference_codons(cds_fasta_path, genetic_code_num, min_len_codons, t
     aa_to_codons = defaultdict(list)
     for codon, aa in unambiguous_dna_by_id[genetic_code_num].forward_table.items():
         aa_to_codons[aa].append(codon)
-    _validate_enc_formula_applies(aa_to_codons, genetic_code_num)
+    degeneracy_family_counts = _degeneracy_family_counts(aa_to_codons)
 
     genes = []
     for record in SeqIO.parse(cds_fasta_path, 'fasta'):
@@ -346,7 +344,7 @@ def _select_reference_codons(cds_fasta_path, genetic_code_num, min_len_codons, t
         codons = [c for c in codons if len(c) == 3 and set(c) <= set('ACGT')]
         if len(codons) < min_len_codons:
             continue
-        genes.append((_calc_enc(codons, aa_to_codons), codons))
+        genes.append((_calc_enc(codons, aa_to_codons, degeneracy_family_counts), codons))
 
     if not genes:
         raise CustomCodonTableFileError(
@@ -395,18 +393,19 @@ def derive_table_from_genome(cds_fasta_path, genetic_code_num=None, min_len_codo
     genome where `top_perc` alone would pick too few genes to reliably
     estimate rarer codons' frequencies.
 
-    `genetic_code_num`: an NCBI genetic code table number - required, and
-    currently must be 11 (bacteria/archaea/plant plastids) or 1 (the
-    standard/eukaryotic-nuclear code); the ENc formula this relies on
-    (`_calc_enc`) is calibrated specifically for the codon-degeneracy
-    structure those two tables share, and raises a clear error for any other
-    table rather than silently returning a meaningless result (confirmed
-    directly: every other NCBI genetic code table has a genuinely different
-    degeneracy structure - e.g. table 2, vertebrate mitochondrial, has no
-    3-fold-degenerate amino acid at all). This function only reads the CDS
-    FASTA, not the GFF, so it can't auto-detect this itself; look it up
-    first via `detect_genetic_code_num_from_gff(gff_path)`, using the GFF
-    from the same `eso.ncbi_genome.fetch_genome_package` call.
+    `genetic_code_num`: an NCBI genetic code table number - required. The
+    ENc formula this relies on (`_calc_enc`) was originally a straight port
+    of STABLES' own version, hardcoded for the standard genetic code's own
+    codon-degeneracy structure (tables 1/11) - confirmed directly that every
+    other NCBI genetic code table has a genuinely different one (e.g. table
+    2, vertebrate mitochondrial, has no 3-fold-degenerate amino acid at
+    all). Generalized (`_degeneracy_family_counts`) to compute those
+    coefficients directly from whichever genetic code is actually given, so
+    this now works correctly for any of them, not just tables 1/11 - this
+    function only reads the CDS FASTA, not the GFF, so it can't auto-detect
+    the right table itself; look it up first via
+    `detect_genetic_code_num_from_gff(gff_path)`, using the GFF from the
+    same `eso.ncbi_genome.fetch_genome_package` call.
 
     Returns
     -------
