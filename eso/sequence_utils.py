@@ -89,14 +89,36 @@ def reverse_complement_seq(seq):
 
 
 def add_backward_sites(df):
-    """Duplicate each row of a {sequence, start, end} dataframe with its reverse complement."""
+    """Duplicate each row of a {sequence, start, end} dataframe with its
+    reverse complement.
+
+    `ignore_index=True`: without it, the concatenated result has each
+    original row index repeated twice (once per half) rather than a clean,
+    unique index - harmless for every current caller (they only ever access
+    columns by position/zip(), never by index label), but a real trap for
+    any future or direct caller that does a label-based `.loc[idx]` lookup
+    expecting one row back, which would silently get two instead. Hardened
+    regardless of current reachability, not just left as a latent risk.
+    """
     df_forward = df.copy()
     df_backward = df.copy()
     df_backward.loc[:, 'sequence'] = df_backward.sequence.apply(reverse_complement_seq)
-    return pd.concat([df_forward, df_backward], ignore_index=False)
+    return pd.concat([df_forward, df_backward], ignore_index=True)
 
 
 def shorten_sequences(df):
+    """Drop the last character of each row's `sequence` and decrement `end`
+    by one - used to build the "one deletion away" candidate set.
+
+    Raises ValueError for any row whose sequence has length < 2: shortening
+    it further would silently produce a degenerate empty-string pattern
+    passed on to detection/DNAChisel code downstream instead of any
+    genuinely useful "one deletion away" candidate. Every current caller
+    only ever passes 16-17nt windows, so this isn't reachable today -
+    hardened anyway rather than relying on that staying true forever.
+    """
+    if not df.empty and (df.sequence.str.len() < 2).any():
+        raise ValueError("shorten_sequences requires every sequence to have length >= 2.")
     df_short = df.copy()
     df_short.loc[:, 'sequence'] = df_short.sequence.apply(lambda x: x[:-1])
     df_short.loc[:, 'end'] = df_short.end.apply(lambda x: x - 1)

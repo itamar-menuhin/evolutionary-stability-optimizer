@@ -65,6 +65,18 @@ def test_add_backward_sites_does_not_mutate_the_input():
     assert df.sequence.iloc[0] == "AATTCCGG"
 
 
+def test_add_backward_sites_result_has_a_unique_index():
+    # Regression test for a real, hardened-regardless-of-reachability gap:
+    # concatenating with ignore_index=False left the result with each
+    # original row's index repeated twice (once per half) - harmless for
+    # every current caller (none does label-based .loc[idx] access), but a
+    # real trap for one that did, silently getting two rows back instead of
+    # one. Confirmed directly before this fix.
+    df = pd.DataFrame([{"sequence": "AATT", "start": 0, "end": 4}, {"sequence": "CCGG", "start": 10, "end": 14}])
+    result = add_backward_sites(df)
+    assert result.index.is_unique
+
+
 def test_shorten_sequences_drops_the_last_base_and_decrements_end():
     df = pd.DataFrame([{"sequence": "ACGTAC", "start": 5, "end": 11}])
 
@@ -79,6 +91,25 @@ def test_shorten_sequences_does_not_mutate_the_input():
     df = pd.DataFrame([{"sequence": "ACGTAC", "start": 5, "end": 11}])
     shorten_sequences(df)
     assert df.sequence.iloc[0] == "ACGTAC" and df.end.iloc[0] == 11
+
+
+def test_shorten_sequences_rejects_a_length_1_sequence():
+    # Regression test for a real, hardened-regardless-of-reachability gap:
+    # shortening a 1nt sequence used to silently produce an empty-string
+    # "sequence" (x[:-1] on a 1-character string) rather than raising -
+    # every current caller only ever passes 16-17nt windows, so this isn't
+    # reachable today, but nothing enforced that, and a degenerate empty
+    # pattern silently reaching detection/DNAChisel code downstream is worse
+    # than failing loudly here instead.
+    df = pd.DataFrame([{"sequence": "A", "start": 5, "end": 6}])
+    with pytest.raises(ValueError, match="length >= 2"):
+        shorten_sequences(df)
+
+
+def test_shorten_sequences_handles_an_empty_dataframe():
+    df = pd.DataFrame(columns=["sequence", "start", "end"])
+    result = shorten_sequences(df)
+    assert result.empty
 
 
 def test_parse_region_rejects_an_extra_dash_instead_of_silently_truncating():
