@@ -105,6 +105,40 @@ def test_incomplete_read_mid_download_gives_friendly_message(tmp_path):
             fetch_genome_package('GCF_000005845.2', dest_dir=tmp_path)
 
 
+def test_local_disk_error_creating_the_download_file_is_not_reported_as_a_network_problem(tmp_path):
+    # Regression test for a real regression introduced by a previous, too-broad
+    # fix: catching bare OSError around the whole download (to catch a
+    # genuine mid-transfer connection drop) ALSO caught a local disk error
+    # (permission denied, disk full) from creating/writing the destination
+    # file and misreported it as "usually a network problem" - actively
+    # misleading for a local issue. Confirmed directly before this narrower
+    # fix. Local I/O errors must get their own, honest message instead.
+    with patch('builtins.open', side_effect=PermissionError('disk full')):
+        with pytest.raises(GenomeFetchError, match="Could not create") as exc_info:
+            fetch_genome_package('GCF_000005845.2', dest_dir=tmp_path)
+    assert "network" not in str(exc_info.value)
+
+
+def test_local_disk_error_writing_the_download_is_not_reported_as_a_network_problem(tmp_path):
+    # Same distinction, but for a disk error mid-write (e.g. running out of
+    # space partway through) rather than at file-creation time.
+    class _FailingHandle:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def write(self, data):
+            raise OSError('disk full mid-write')
+
+    with patch('builtins.open', return_value=_FailingHandle()), \
+            patch('urllib.request.urlopen', return_value=_FakeResponse(_fake_zip_bytes('GCF_000005845.2'))):
+        with pytest.raises(GenomeFetchError, match="Could not write") as exc_info:
+            fetch_genome_package('GCF_000005845.2', dest_dir=tmp_path)
+    assert "network" not in str(exc_info.value)
+
+
 def test_not_a_zip_file_gives_friendly_message(tmp_path):
     with patch('urllib.request.urlopen', return_value=_FakeResponse(b'not actually a zip file')):
         with pytest.raises(GenomeFetchError, match="isn't a valid genome-package zip"):

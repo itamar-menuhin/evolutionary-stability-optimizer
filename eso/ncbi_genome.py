@@ -67,33 +67,60 @@ class GenomePackage:
     genome_fasta_path: str
 
 
+#: Genuine network-layer failures - a connection dropping mid-transfer
+#: (ConnectionError, an OSError subclass but NOT a urllib.error.URLError
+#: one) or the server closing early (http.client.IncompleteRead, its own
+#: separate exception hierarchy) - in addition to urllib's own URLError
+#: (raised at connection-open time: DNS failure, refused connection, a
+#: non-2xx status). Deliberately narrower than bare OSError: a previous
+#: version of this fix caught OSError broadly around the whole download,
+#: which also happened to catch a LOCAL disk error (permission denied,
+#: disk full) from opening/writing the destination file and misreported it
+#: as a network problem - confirmed directly this was a real, reachable
+#: regression, not hypothetical. Local I/O errors are now caught separately,
+#: right where they occur, with their own honest message.
+_NETWORK_ERRORS = (urllib.error.URLError, ConnectionError, TimeoutError, http.client.HTTPException)
+
+
 def _download(url, dest):
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".part")
+
     try:
-        with urllib.request.urlopen(url, timeout=120) as response, open(tmp, "wb") as handle:
-            while True:
-                chunk = response.read(_CHUNK_SIZE)
-                if not chunk:
-                    break
-                handle.write(chunk)
-    # Confirmed real gap: URLError/TimeoutError alone only catches failures at
-    # connection-open time. A genuine multi-second, multi-MB transfer (this
-    # module's own docstring: "1.5-8.7s for three real test organisms") can
-    # just as plausibly drop mid-download - a connection reset raises a plain
-    # OSError subclass (ConnectionResetError, not a URLError), and the server
-    # closing early raises http.client.IncompleteRead (not a URLError either,
-    # its own separate exception hierarchy) - neither was caught here, so
-    # either would have crashed with a raw, unhandled exception instead of
-    # this function's own documented GenomeFetchError.
-    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+        try:
+            handle = open(tmp, "wb")
+        except OSError as exc:
+            raise GenomeFetchError(
+                f"Could not create '{tmp}' to download into - check that the destination "
+                f"directory is writable and has enough free disk space. The underlying error "
+                f"was: {exc!r}."
+            ) from exc
+
+        with handle:
+            try:
+                with urllib.request.urlopen(url, timeout=120) as response:
+                    while True:
+                        chunk = response.read(_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        try:
+                            handle.write(chunk)
+                        except OSError as exc:
+                            raise GenomeFetchError(
+                                f"Could not write to '{tmp}' - check that the destination disk "
+                                f"has enough free space. The underlying error was: {exc!r}."
+                            ) from exc
+            except _NETWORK_ERRORS as exc:
+                raise GenomeFetchError(
+                    f"Could not fetch the NCBI genome package from {url!r}. This is usually either "
+                    f"a network problem, or '{url.rsplit('/accession/', 1)[-1].split('/download')[0]}' "
+                    f"isn't a real/current NCBI assembly accession - check it at "
+                    f"https://www.ncbi.nlm.nih.gov/datasets/genome. The underlying error was: {exc!r}."
+                ) from exc
+    except GenomeFetchError:
         tmp.unlink(missing_ok=True)
-        raise GenomeFetchError(
-            f"Could not fetch the NCBI genome package from {url!r}. This is usually either "
-            f"a network problem, or '{url.rsplit('/accession/', 1)[-1].split('/download')[0]}' "
-            f"isn't a real/current NCBI assembly accession - check it at "
-            f"https://www.ncbi.nlm.nih.gov/datasets/genome. The underlying error was: {exc!r}."
-        ) from exc
+        raise
+
     tmp.replace(dest)
 
 
@@ -212,13 +239,16 @@ def resolve_assembly_accession(species_name_or_taxid):
     """
     url = _NCBI_TAXON_REPORT_URL_TEMPLATE.format(name_or_taxid=urllib.parse.quote(str(species_name_or_taxid)))
     try:
-        # See _download's identical fix: URLError/TimeoutError alone misses a
-        # connection dropping mid-response (ConnectionResetError, an OSError
-        # subclass but not a URLError one) and a truncated read
-        # (http.client.IncompleteRead, its own separate hierarchy).
+        # See _download's identical fix and _NETWORK_ERRORS' own docstring:
+        # URLError/TimeoutError alone misses a connection dropping
+        # mid-response. No local file I/O happens in this function, so
+        # there's no risk of misattributing a local error here the way a
+        # bare `except OSError` would for _download - still using the same
+        # narrower _NETWORK_ERRORS tuple for consistency, not because it's
+        # required here.
         with urllib.request.urlopen(url, timeout=30) as response:
             raw = response.read()
-    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+    except _NETWORK_ERRORS as exc:
         raise GenomeFetchError(
             f"Could not look up '{species_name_or_taxid}' on NCBI - this is usually a network "
             f"problem. The underlying error was: {exc!r}."
