@@ -111,6 +111,31 @@ def _constraints_to_drop(cnst, problem):
     return [min(droppable_failing, key=lambda c: getattr(c, 'eso_severity', float('inf')))]
 
 
+def _try_restore(cnst_without, constraint, obj, seq):
+    """Attempt a single resolve_constraints() with `constraint` added back to
+    `cnst_without` (a fresh list, not mutated). Returns the resulting
+    resolved problem if it succeeds, or None if it doesn't (either a
+    NoSolutionError, or the same localized-None crash the main retry loop
+    below already knows how to recognize and treat as "still doesn't work" -
+    any OTHER exception is a real bug and propagates, matching the main
+    loop's own philosophy). This is deliberately a single attempt, not a
+    nested retry loop - a "best-effort, provably safe" check of whether this
+    one constraint specifically is still necessary given everything else
+    currently in play, not a full re-optimization.
+    """
+    candidate_cnst = cnst_without + [constraint]
+    trial_problem = dnachisel.DnaOptimizationProblem(sequence=str(seq), constraints=candidate_cnst, objectives=obj)
+    try:
+        trial_problem.resolve_constraints()
+    except NoSolutionError:
+        return None
+    except AttributeError as e:
+        if _LOCALIZED_NONE_CRASH_MESSAGE not in str(e):
+            raise
+        return None
+    return trial_problem
+
+
 def _warn_dropped_constraint(constraint):
     warnings.warn(
         f"Could not satisfy constraint {constraint} - dropping it and continuing without it. "
@@ -362,6 +387,7 @@ def optimization_engine(
     # the floor for the common, small-constraint-count case this was
     # originally tuned for.
     retry_budget = max(60, len(cnst))
+    dropped = []  # every constraint removed below, across both branches - see the shrink pass after this loop
     while flag < retry_budget:  # retry, dropping unsatisfiable/crashing constraints
         problem = dnachisel.DnaOptimizationProblem(sequence=str(seq), constraints=cnst, objectives=obj)
         try:
@@ -381,8 +407,8 @@ def optimization_engine(
         # droppable (not hard/protected) constraint - just drop that one, no
         # need to re-evaluate everything else ourselves.
         if named_culprit is not None and not isinstance(named_culprit, _PROTECTED_CONSTRAINT_TYPES):
-            _warn_dropped_constraint(named_culprit)
             cnst.remove(named_culprit)
+            dropped.append(named_culprit)
             flag += 1
             continue
 
@@ -419,12 +445,33 @@ def optimization_engine(
                 problem=None,
             )
         for constraint in to_drop:
-            _warn_dropped_constraint(constraint)
             cnst.remove(constraint)
+        dropped.extend(to_drop)
         flag += 1
     else:
         raise NoSolutionError(
             f"More than {retry_budget} hard constraints were not satisfied ({flag}).", problem=problem)
+
+    # Verify minimality: the greedy walk above drops constraints as it goes,
+    # in ascending-severity order, but never re-checks whether an EARLIER
+    # drop is still needed once LATER drops have also happened - so a
+    # constraint can end up dropped even though, given everything else that
+    # ended up dropped too, it was never actually necessary on its own. This
+    # is exactly the "only remove what actually helps resolve the clash"
+    # guarantee that matters, not just an ordering preference - so it's
+    # verified directly here, not just aimed for during the walk above. Try
+    # restoring each dropped constraint, most severe (most worth keeping)
+    # first; whatever restores cleanly (a single resolve_constraints() with
+    # it added back - see _try_restore) stays restored, and only a
+    # constraint that genuinely still breaks the resolution when restored is
+    # left dropped and warned about.
+    for constraint in sorted(dropped, key=lambda c: getattr(c, 'eso_severity', float('inf')), reverse=True):
+        restored_problem = _try_restore(cnst, constraint, obj, seq)
+        if restored_problem is not None:
+            cnst.append(constraint)
+            problem = restored_problem
+        else:
+            _warn_dropped_constraint(constraint)
 
     problem.optimize()
     obj_description = problem.objectives_text_summary()

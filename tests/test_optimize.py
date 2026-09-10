@@ -401,8 +401,75 @@ def test_enforce_gc_content_conflict_is_resolved_by_dropping_the_lower_severity_
         df_slippage=df_slippage, organism_name="not_specified",
     )
 
+    # In this scenario BOTH sites are genuinely necessary (the fake resolver
+    # only succeeds once every AvoidPattern is gone), so the shrink/restore
+    # pass below can't un-drop either one - both stay dropped, but restore is
+    # attempted highest-severity-first, so the warning order is reversed
+    # from drop order: -1.0 (tried to restore first, fails) then -5.0.
     assert len(dropped) == 2
-    assert [round(c.eso_severity, 1) for c in dropped] == [-5.0, -1.0]
+    assert [round(c.eso_severity, 1) for c in dropped] == [-1.0, -5.0]
+
+
+def test_gc_content_shrink_pass_restores_a_constraint_that_turned_out_unnecessary(monkeypatch):
+    # The real gap the growth-only design (above) left open: the greedy walk
+    # drops constraints in ascending-severity order as it goes, but never
+    # re-checks whether an EARLIER drop is still needed once LATER drops
+    # have also happened - so a constraint can end up permanently dropped
+    # even though, given everything else that ended up dropped too, it was
+    # never actually necessary on its own. Simulates exactly that: dropping
+    # A (severity -9, tried first - least severe) doesn't help on its own,
+    # so the walk also drops B (severity -1, the real blocker) - but once B
+    # is gone, A was never actually needed. The shrink pass must restore A
+    # and leave only B dropped (and warned about).
+    seq = "ATG" + "AAA" * 5 + "TAA"
+
+    a_constraint = dnachisel.AvoidPattern("GATC")
+    a_constraint.eso_severity = -9.0
+    b_constraint = dnachisel.AvoidPattern("GATC")
+    b_constraint.eso_severity = -1.0
+
+    class _FakeFailingEvaluation:
+        passes = False
+
+    # GC content and every AvoidPattern candidate always evaluate as
+    # failing, regardless of real sequence content - _constraints_to_drop
+    # must always see both A and B as live candidates each round.
+    monkeypatch.setattr(dnachisel.EnforceGCContent, "evaluate", lambda self, problem: _FakeFailingEvaluation())
+    monkeypatch.setattr(dnachisel.AvoidPattern, "evaluate", lambda self, problem: _FakeFailingEvaluation())
+
+    def fake_resolve_constraints(self, *args, **kwargs):
+        # "Resolved" iff B specifically is absent - A's presence or absence
+        # never actually mattered, only the greedy walk doesn't know that.
+        # DnaOptimizationProblem copies each constraint on construction (
+        # confirmed directly: `problem.constraints[0] is original_constraint`
+        # is False), so identity/equality checks against the original object
+        # don't survive - checking the custom eso_severity attribute instead,
+        # which DOES survive the copy (also confirmed directly).
+        if any(getattr(c, 'eso_severity', None) == b_constraint.eso_severity for c in self.constraints):
+            raise NoSolutionError("simulated ambiguous failure", problem=self, constraint=None)
+
+    monkeypatch.setattr(dnachisel.DnaOptimizationProblem, "resolve_constraints", fake_resolve_constraints)
+
+    dropped = []
+    monkeypatch.setattr("eso.optimize._warn_dropped_constraint", lambda constraint: dropped.append(constraint))
+
+    def fake_convert_df_to_constraints(df):
+        return [a_constraint, b_constraint]
+
+    monkeypatch.setattr("eso.optimize.convert_df_to_constraints", fake_convert_df_to_constraints)
+
+    df_slippage = pd.DataFrame([{
+        "start": 3, "end": 6, "length_base_unit": 3, "sequence": "AAA",
+        "num_base_units": 2, "log10_prob_slippage_ecoli": -1.0,
+    }])
+
+    final_seq, _, _ = optimization_engine(
+        seq, mini_gc=0.3, maxi_gc=0.7, df_slippage=df_slippage, organism_name="not_specified")
+
+    assert final_seq == seq  # fake resolver never mutates anything
+    # A was dropped during growth (tried first, least severe) but restored
+    # once the shrink pass confirmed B alone was the actual blocker.
+    assert dropped == [b_constraint]
 
 
 def test_enforce_gc_content_is_never_silently_dropped_when_no_alternative_helps(monkeypatch):
@@ -449,8 +516,24 @@ def test_retry_budget_scales_past_the_old_fixed_60_round_cap():
     # large (~100 point constraints), all-unsatisfiable case still resolves
     # correctly with the new budget in place - a coverage-at-scale check, not
     # proof the old cap was reachable.
-    num_t = 200  # ~100 point constraints via modify_df_slippage's "every other unit"
+    # num_t must be a multiple of 3, so the trailing "TAA" actually lands
+    # in-frame as a real, protected stop codon. A previous version of this
+    # test used num_t=200 (not a multiple of 3): the resulting 206nt
+    # sequence isn't a multiple of 3 either, so optimization_engine's own
+    # default orf_regions computation (`(len(seq) // 3) * 3`) correctly
+    # truncated the "ORF" to 204nt, leaving the last 2 characters of the
+    # string - part of what looked like "TAA" - genuinely OUTSIDE
+    # EnforceTranslation's protection, free for GC-content optimization to
+    # mutate. That's a real bug in the TEST FIXTURE (an accidentally
+    # frame-shifted, not-really-protected "stop codon"), not in the retry
+    # loop: confirmed directly that with a properly frame-aligned sequence,
+    # the real default GC bounds (0.3-0.7, restored below - a previous fix
+    # here had incorrectly widened them to 0.0-1.0 to dodge this same
+    # flakiness instead of finding its actual cause) are stable across many
+    # runs.
+    num_t = 201  # ~100 point constraints via modify_df_slippage's "every other unit"
     seq = "ATG" + "T" * num_t + "TAA"
+    assert len(seq) % 3 == 0
     df_slippage = pd.DataFrame([{
         "start": 3, "end": 3 + num_t, "length_base_unit": 1, "sequence": "T" * num_t,
         "num_base_units": num_t, "log10_prob_slippage_ecoli": -1.0,
@@ -458,17 +541,7 @@ def test_retry_budget_scales_past_the_old_fixed_60_round_cap():
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        # mini_gc/maxi_gc wide open: a near-pure-T homopolymer this long
-        # otherwise puts EnforceGCContent in a REAL, incidental conflict with
-        # these same point constraints (each one's only available mutation -
-        # T to A/C/G - is also the only way to raise local GC% in that
-        # window), which this test isn't about and shouldn't be perturbed by;
-        # confirmed directly that leaving the default 0.3-0.7 bounds in place
-        # made this test's outcome depend on DNAChisel's own solving order,
-        # occasionally landing on a corrupted (non-stop) final codon - a real
-        # but unrelated interaction, not a retry-budget regression.
-        final_seq, _, _ = optimization_engine(
-            seq, df_slippage=df_slippage, organism_name="kompas", mini_gc=0.0, maxi_gc=1.0)
+        final_seq, _, _ = optimization_engine(seq, df_slippage=df_slippage, organism_name="kompas")
 
     assert len(final_seq) == len(seq)
     assert final_seq[:3] == "ATG" and final_seq[-3:] in ("TAA", "TAG", "TGA")
